@@ -1,41 +1,75 @@
+// components/chat/ChatMessages.tsx
 'use client';
 
 import React, { useRef, useEffect } from 'react';
-import Message from './Message'; // Assuming Message is in the same directory
+import MessageBlock from '@/components/chat/MessageBlock'; // *** RENAME Message to MessageBlock ***
 import { Message as ApiMessage } from '@/lib/api';
-import { MagicWandIcon } from '@radix-ui/react-icons'; // Or keep DotsVerticalIcon from parent
-import { DotsVerticalIcon } from '@radix-ui/react-icons'; // Keep consistent icon for prompt
+import { MagicWandIcon } from '@radix-ui/react-icons';
+import { FileIcon, Terminal } from 'lucide-react'; // Use Lucide consistently
 
+// Props Interface (remains mostly the same, passed down)
 interface ChatMessagesProps {
     messages: ApiMessage[];
-    isAsking: boolean; // To know whether to show the welcome message
-    currentAIMessageId?: string | null; // Add optional prop for styling/identifying streaming message
+    isAsking: boolean;
+    currentAIMessageId?: string | null;
+    activeContextMessageId?: string | null;
+    onShowContext?: (messageId: string | null) => void;
 }
 
-export default function ChatMessages({ messages, isAsking, currentAIMessageId }: ChatMessagesProps) {
+export default function ChatMessages({
+    messages,
+    isAsking,
+    currentAIMessageId,
+    activeContextMessageId,
+    onShowContext
+}: ChatMessagesProps) {
     const messagesEndRef = useRef<null | HTMLDivElement>(null);
+    const scrollContainerRef = useRef<null | HTMLDivElement>(null);
 
-    // Simplified scroll logic, might need adjustment if parent handles scroll
+    // Scroll logic (remains the same)
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        const container = scrollContainerRef.current;
+        if (container) {
+            const threshold = 100;
+            const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+            if (isNearBottom || messages.length <= 2) { // Scroll if near bottom or very start
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            }
+        } else {
+             messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
     }, [messages]);
 
     return (
-        <div className="flex-grow overflow-y-auto p-4 space-y-4 bg-muted/30 scroll-smooth">
+        // Container takes full height and allows vertical scroll
+        <div ref={scrollContainerRef} className="flex-grow overflow-y-auto p-4 md:p-6 space-y-6 bg-muted/30 scroll-smooth"> {/* Increased spacing */}
             {messages.length === 0 && !isAsking ? (
-                <div className="flex flex-col items-center justify-center h-full text-center">
-                    <MagicWandIcon className="w-16 h-16 text-muted-foreground/50 mb-4" />
-                    <h3 className="text-lg font-semibold text-foreground mb-1">Start Chatting</h3>
-                    <p className="text-sm text-muted-foreground px-4 max-w-xs">
-                        Upload documents using the <DotsVerticalIcon className="inline h-3 w-3 mx-0.5" /> menu,
-                        optionally select scope/tag, then ask a question.
-                    </p>
+                // Welcome message (can stay similar)
+                <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground">
+                     <MagicWandIcon className="w-16 h-16 text-muted-foreground/50 mb-4" />
+                     <h3 className="text-lg font-semibold text-foreground mb-1">Assistant Ready</h3>
+                     <p className="text-sm px-4 max-w-xs">
+                         Use the sidebar <span className="inline-block mx-1 text-lg align-text-bottom">☰</span>
+                          to upload or select documents, then ask a question below.
+                     </p>
+                      <p className="text-xs mt-2 px-4 max-w-xs">
+                          Click AI responses <span className="inline-block mx-0.5"><Terminal size={12} /></span>
+                          to see agent steps in the context pane.
+                     </p>
                 </div>
             ) : (
-                messages.map((msg, index) => (
-                    <Message key={msg.id ?? `msg-${index}`} message={msg} isStreaming={msg.id === currentAIMessageId} />
+                // *** Render messages using the new MessageBlock component ***
+                 messages.map((msg) => (
+                    <MessageBlock // *** Use MessageBlock ***
+                        key={msg.id ?? `msg-${msg.sender}-${Math.random()}`}
+                        message={msg}
+                        isStreaming={msg.id === currentAIMessageId}
+                        isActiveContext={msg.id === activeContextMessageId}
+                        onShowContext={onShowContext}
+                    />
                 ))
             )}
+            {/* Div for scrolling into view */}
             <div ref={messagesEndRef} />
         </div>
     );

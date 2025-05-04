@@ -44,6 +44,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent # Project root (backend/)
 UPLOAD_DIR = BASE_DIR / os.getenv("UPLOAD_DIR", "data/uploads")
 VECTOR_STORE_DIR = BASE_DIR / os.getenv("VECTOR_STORE_DIR", "data/vector_store")
 
+
+SEARXNG_URL = os.getenv("SEARXNG_URL")
+# Convert string 'true'/'false' from env var to boolean
+SEARXNG_UNSECURE = os.getenv("SEARXNG_UNSECURE", "false").lower() == "true"
+
+# Log SearXNG status
+if SEARXNG_URL:
+    logger.info(f"SearXNG integration enabled. Host: {SEARXNG_URL}, Unsecure (HTTP): {SEARXNG_UNSECURE}")
+else:
+    logger.warning("SearXNG URL not set in .env. Web search tool will be disabled.")
+
 # --- Validate Configuration ---
 if AI_PROVIDER not in ["ollama", "openai"]:
     logger.error(f"Invalid AI_PROVIDER specified: '{AI_PROVIDER}'. Must be 'ollama' or 'openai'. Defaulting to 'ollama'.")

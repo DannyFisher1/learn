@@ -13,10 +13,25 @@ from importlib.metadata import PackageNotFoundError, distribution, metadata
 @tool
 def inspect_package(package_name: str) -> str:
     """
-    Inspect an installed Python pip package: list its modules, functions, and classes.
-    Returns a JSON summary. Supports resolving distribution vs importable module name.
-    
-    Example input: 'pandas', 'numpy', 'langchain-community'
+    Inspects the **INTERNAL STRUCTURE** of an installed Python pip package. Use this to understand the modules, functions, and classes available within a specific package.
+
+    Purpose: To provide a developer-focused view of a package's code organization and contents.
+
+    Input:
+      - `package_name` (string, required): The distribution name of the Python package as installed by pip (e.g., 'numpy', 'pandas', 'langchain-community'). The tool attempts to resolve this to the correct importable module name (e.g., 'langchain-community' -> 'langchain_community').
+
+    Output:
+      - (string): A JSON formatted string summarizing the package structure, including nested modules and their contained functions and classes. Returns a JSON error object on failure (e.g., package not found).
+
+    ***IMPORTANT USAGE NOTES***:
+    1.  **Code Structure:** Use this when the user wants to know *what code* is inside a package (module names, function names, class names).
+    2.  **Contrast with `get_package_info`:** DO NOT use this tool to get metadata like version, author, or license. Use `get_package_info` for that.
+    3.  **Requires Installation:** The package MUST be installed in the Python environment where the backend is running.
+
+    Example Scenarios:
+      - User asks: "What modules are available in the pandas library?" -> Use this tool with `package_name="pandas"`.
+      - User asks: "Show me the functions inside the `langchain_core.prompts` module." -> Use this tool with `package_name="langchain-core"` (or potentially `langchain` depending on installation) and then explain how to interpret the JSON to find the specific module info.
+      - User asks: "What version of numpy is installed?" -> DO NOT use this tool. Use `get_package_info`.
     """
 
     def resolve_importable_module(pkg: str):
@@ -70,10 +85,25 @@ def inspect_package(package_name: str) -> str:
 @tool 
 def get_package_info(package_name: str) -> str:
     """
-    Return basic metadata about a pip package: version, summary, license, homepage, dependencies, etc.
-    
-    Input: pip package name (e.g., 'numpy', 'langchain-community')
-    Output: JSON summary of metadata fields.
+    Retrieves **METADATA** about an installed Python pip package. Use this to find information like version, summary, author, license, dependencies, and homepage.
+
+    Purpose: To provide high-level, descriptive information about a package.
+
+    Input:
+      - `package_name` (string, required): The distribution name of the Python package as installed by pip (e.g., 'numpy', 'pandas', 'langchain-community').
+
+    Output:
+      - (string): A JSON formatted string containing key metadata fields for the package. Returns a JSON error object on failure (e.g., package not found).
+
+    ***IMPORTANT USAGE NOTES***:
+    1.  **Package Metadata:** Use this when the user asks for information *about* a package (version, description, author, license, etc.).
+    2.  **Contrast with `inspect_package`:** DO NOT use this tool to see the internal code structure (modules, functions, classes). Use `inspect_package` for that.
+    3.  **Requires Installation:** The package MUST be installed in the Python environment where the backend is running.
+
+    Example Scenarios:
+      - User asks: "What version of langchain is installed?" -> Use this tool with `package_name="langchain"`.
+      - User asks: "What is the license for the 'requests' library?" -> Use this tool with `package_name="requests"`.
+      - User asks: "What functions are in the numpy.linalg module?" -> DO NOT use this tool. Use `inspect_package`.
     """
 
     try:
