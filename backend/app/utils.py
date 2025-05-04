@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 from langchain_core.agents import AgentAction
 # --------------------------------------
 from typing import Union
+from langchain_core.documents import Document
 
 # --- Logging Setup ---
 # (Keep existing logging setup)
@@ -97,3 +98,10 @@ def serialize_intermediate_steps(steps: List[Any]) -> List[Dict[str, Any]]:
     return serialized_steps
 
 # (Keep other utilities like format_metadata_source if you have them)
+
+# --- NEW: Document Serialization ---
+def serialize_documents(documents: List[Document]) -> List[Dict[str, Any]]:
+    """
+    Converts a list of Document objects into a JSON-serializable list of dictionaries.
+    """
+    return [doc.to_dict() for doc in documents]

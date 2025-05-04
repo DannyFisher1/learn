@@ -16,6 +16,22 @@ export interface IntermediateStep {
     observation: any;
 }
 
+// --- ADD RedditPost Interface --- //
+// Matches the structure sent by the backend's 'reddit_results' event
+// Also used by ObservationDisplay, ensure keys match there too.
+export interface RedditPost {
+    post_title: string;
+    post_score: number;
+    post_id: string;
+    post_subreddit: string;
+    post_url: string;
+    post_created_utc?: number;
+    post_text?: string;
+    post_num_comments?: number;
+    post_author?: string;
+}
+// ----------------------------- //
+
 // Interface for a single RAG Context Document (matches backend serialization)
 export interface RagContextDocument {
     id: string; // e.g., "doc_0", "doc_1"
@@ -250,17 +266,17 @@ export const askQuestionStream = (
     const parseAndHandleSSEData = ( event: string | null, data: string, cbs: StreamCallbacks ) => {
         const eventType = event || 'message'; // SSE default event type
         try {
-            const parsedData: StreamEventData = JSON.parse(data); // Assumes data is always valid JSON
+            const parsedData = JSON.parse(data); // Removed explicit type cast here
 
             // console.debug(`[SSE Parser] Event='${eventType}', Data:`, parsedData); // Verbose debug log
 
             if (eventType === 'token' && typeof parsedData.token === 'string' && cbs.onToken) {
                 cbs.onToken(parsedData.token);
             } else if (eventType === 'step' && parsedData.step && cbs.onStep) {
-                cbs.onStep(parsedData.step);
+                cbs.onStep(parsedData.step as IntermediateStep);
             } else if (eventType === 'step_final' && parsedData.step && cbs.onStepFinal) {
-                 // Note: Backend sends event='step_final', but data key is 'step'
-                 cbs.onStepFinal(parsedData.step);
+                // Pass the nested step object, which matches the IntermediateStep structure
+                cbs.onStepFinal(parsedData.step as IntermediateStep); // Pass the nested object
             } else if (eventType === 'rag_context' && Array.isArray(parsedData.context) && cbs.onRagContext) {
                  console.log(`[SSE Parser] Identified 'rag_context' with ${parsedData.context.length} docs.`);
                  cbs.onRagContext(parsedData.context as RagContextDocument[]); // Pass validated context

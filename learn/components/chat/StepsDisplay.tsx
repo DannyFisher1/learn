@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from "@/components/ui/scroll-area"; 
 import { Terminal, Eye, BoxSelect, Info } from 'lucide-react'; // Use Lucide consistently
+import ObservationDisplay from './ObservationDisplay'; // <-- Import ObservationDisplay
 
 // Helper type guard (keep for local use or move to shared utils)
 function isAgentAction(action: any): action is AgentAction {
@@ -21,6 +22,9 @@ interface StepsDisplayProps {
 }
 
 export default function StepsDisplay({ steps }: StepsDisplayProps) {
+    // --- ADD LOGGING ---
+    console.log("[StepsDisplay] Received steps prop:", steps);
+    // -------------------
 
     // Display placeholder/instructions if no steps are provided (or if RAG context is active)
     if (!steps || steps.length === 0) {
@@ -44,65 +48,66 @@ export default function StepsDisplay({ steps }: StepsDisplayProps) {
                  <h3 className="text-sm font-semibold text-muted-foreground sticky top-0 bg-card pb-2 pt-0 border-b mb-2"> {/* Sticky header */}
                     Agent Steps ({steps.length})
                  </h3>
-                 {steps.map((step, idx) => (
-                    // Card for each step for visual grouping
-                    <Card key={`step-${idx}`} className="bg-muted/50 shadow-sm overflow-hidden"> {/* Added overflow-hidden */}
-                         {/* Use CardHeader for step number, less padding */}
-                         <CardHeader className="p-2 pb-1 border-b bg-muted/70">
-                            <CardTitle className="text-xs font-medium text-muted-foreground flex items-center">
-                                <Terminal size={12} className="mr-1.5 flex-shrink-0" />
-                                Step {idx + 1}
-                            </CardTitle>
-                        </CardHeader>
-                        {/* Use CardContent for action/observation details */}
-                        <CardContent className="p-2 text-xs space-y-2">
-                             {/* Action Block */}
-                             {isAgentAction(step.action) ? (
-                                <div className="border-l-2 border-blue-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
-                                    <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
-                                         <BoxSelect size={13} className="flex-shrink-0" /> Action: Use Tool
-                                    </div>
-                                    <Badge variant="outline" className="text-[10px] font-mono h-auto py-0.5 px-1.5 bg-background shadow-sm">
-                                        {step.action.tool || 'Unknown Tool'}
-                                    </Badge>
-                                    {/* Input Block - use pre-wrap */}
-                                    <div className="mt-1 font-mono bg-background p-2 rounded text-muted-foreground text-[11px] overflow-x-auto whitespace-pre-wrap break-words border">
-                                         <span className="font-semibold text-foreground/75 block mb-0.5">Input:</span>
-                                         {typeof step.action.tool_input === 'string'
-                                            ? step.action.tool_input
-                                            : JSON.stringify(step.action.tool_input, null, 2)}
-                                    </div>
-                                </div>
-                             ) : (
-                                 // Fallback if action is not a standard AgentAction object
-                                 <div className="border-l-2 border-gray-400 pl-2.5 py-1">
-                                     <p><span className="font-semibold text-foreground/95">Action:</span> {String(step.action)}</p>
-                                 </div>
-                             )}
+                 {steps.map((step, idx) => {
+                    // Extract tool name safely, ensuring it's string or null
+                    const action = step.action;
+                    const toolName = isAgentAction(action) ? (action.tool || null) : null;
 
-                            {/* Observation Block */}
-                            <div className="border-l-2 border-green-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
-                                 <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
-                                     <Eye size={13} className="flex-shrink-0" /> Observation:
-                                 </div>
-                                 {/* Observation Content - use pre-wrap */}
-                                 <div className="mt-0.5 text-muted-foreground bg-background p-2 rounded text-[11px] overflow-x-auto whitespace-pre-wrap break-words border">
-                                    {step.observation === '⏳ Processing...' ? (
-                                        <span className="italic text-foreground/70">{step.observation}</span>
-                                    ) : (
-                                         // Consistent formatting using pre/code for objects/JSON-like strings
-                                         (typeof step.observation === 'string' && step.observation.trim().startsWith('{') && step.observation.trim().endsWith('}'))
-                                         ? (<pre className="text-[11px]"><code>{JSON.stringify(JSON.parse(step.observation), null, 2)}</code></pre>)
-                                         : (typeof step.observation === 'object' && step.observation !== null
-                                            ? (<pre className="text-[11px]"><code>{JSON.stringify(step.observation, null, 2)}</code></pre>)
-                                            : String(step.observation)) // Render plain strings directly
-                                    )
-                                    }
-                                 </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
+                    return (
+                        // Card for each step for visual grouping
+                        <Card key={`step-${idx}`} className="bg-muted/50 shadow-sm overflow-hidden"> {/* Added overflow-hidden */}
+                            {/* Use CardHeader for step number, less padding */}
+                            <CardHeader className="p-2 pb-1 border-b bg-muted/70">
+                                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center">
+                                    <Terminal size={12} className="mr-1.5 flex-shrink-0" />
+                                    Step {idx + 1}
+                                </CardTitle>
+                            </CardHeader>
+                            {/* Use CardContent for action/observation details */}
+                            <CardContent className="p-2 text-xs space-y-2">
+                                 {/* Action Block */}
+                                 {isAgentAction(step.action) ? (
+                                    <div className="border-l-2 border-blue-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
+                                        <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
+                                             <BoxSelect size={13} className="flex-shrink-0" /> Action: Use Tool
+                                        </div>
+                                        <Badge variant="outline" className="text-[10px] font-mono h-auto py-0.5 px-1.5 bg-background shadow-sm">
+                                            {step.action.tool || 'Unknown Tool'}
+                                        </Badge>
+                                        {/* Input Block - use pre-wrap */}
+                                        <div className="mt-1 font-mono bg-background p-2 rounded text-muted-foreground text-[11px] overflow-x-auto whitespace-pre-wrap break-words border">
+                                             <span className="font-semibold text-foreground/75 block mb-0.5">Input:</span>
+                                             {typeof step.action.tool_input === 'string'
+                                                ? step.action.tool_input
+                                                : JSON.stringify(step.action.tool_input, null, 2)}
+                                        </div>
+                                    </div>
+                                 ) : (
+                                     // Fallback if action is not a standard AgentAction object
+                                     <div className="border-l-2 border-gray-400 pl-2.5 py-1">
+                                         <p><span className="font-semibold text-foreground/95">Action:</span> {String(step.action)}</p>
+                                     </div>
+                                 )}
+
+                                {/* Observation Block */}
+                                <div className="border-l-2 border-green-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
+                                     <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
+                                         <Eye size={13} className="flex-shrink-0" /> Observation:
+                                     </div>
+                                     {/* Observation Content - Now uses ObservationDisplay */}
+                                     <div className="mt-0.5 text-muted-foreground bg-background p-1 rounded text-[11px] overflow-x-auto border"> {/* Adjusted padding */}
+                                        {step.observation === '⏳ Processing...' ? (
+                                            <span className="italic text-foreground/70">{step.observation}</span>
+                                        ) : (
+                                            <ObservationDisplay observation={step.observation} toolName={toolName} /> // <-- Use ObservationDisplay
+                                        )
+                                        }
+                                     </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    );
+                })}
             </div>
         </ScrollArea>
     );

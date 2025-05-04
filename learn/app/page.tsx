@@ -10,7 +10,7 @@ import {
     askQuestionStream,
     DocumentInfo,
     RagContextDocument,
-    AgentAction // Import type
+    AgentAction
 } from '@/lib/api';
 
 // Import Components
@@ -21,9 +21,9 @@ import UploadDropdown from '@/components/common/UploadDropdown';
 import CollapsibleSidebar from '@/components/layout/CollapsibleSidebar';
 import IntegratedInput from '@/components/chat/IntegratedInput';
 import ChatMessages from '@/components/chat/ChatMessages';
-import StepsDisplay from '@/components/chat/StepsDisplay'; // Displays raw steps
-import RagContextDisplay from '@/components/chat/RagContextDisplay'; // Displays RAG context
-import ObservationDisplay from '@/components/chat/ObservationDisplay'; // Displays formatted observations
+import StepsDisplay from '@/components/chat/StepsDisplay';
+import RagContextDisplay from '@/components/chat/RagContextDisplay';
+import ObservationDisplay from '@/components/chat/ObservationDisplay';
 
 // Import Icons
 import { Info, Terminal } from 'lucide-react';
@@ -43,7 +43,7 @@ export default function Home() {
     const [input, setInput] = useState('');
     const [isAsking, setIsAsking] = useState(false);
     const [askError, setAskError] = useState<string | null>(null);
-    const [currentAIMessageId, setCurrentAIMessageId] = useState<string | null>(null); // Still useful for tracking stream target
+    const [currentAIMessageId, setCurrentAIMessageId] = useState<string | null>(null);
     const streamAbortController = useRef<AbortController | null>(null);
 
     // --- Document Scope & Management State ---
@@ -54,17 +54,17 @@ export default function Home() {
 
     // --- UI Layout & Context State ---
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-    // --- State for Right Pane Content ---
-    const [activeContextSteps, setActiveContextSteps] = useState<IntermediateStep[] | null>(null); // Holds raw steps
-    const [activeRagContext, setActiveRagContext] = useState<RagContextDocument[] | null>(null); // Holds RAG snippets
-    const [activeObservationData, setActiveObservationData] = useState<any | null>(null); // Holds structured observation
-    const [activeObservationTool, setActiveObservationTool] = useState<string | null>(null); // Holds the tool name for observation
-    // --- Removed activeContextMessageId ---
+    // ** Right Pane State **
+    const [activeContextSteps, setActiveContextSteps] = useState<IntermediateStep[] | null>(null);
+    const [activeRagContext, setActiveRagContext] = useState<RagContextDocument[] | null>(null);
+    const [activeObservationData, setActiveObservationData] = useState<any | null>(null);
+    const [activeObservationTool, setActiveObservationTool] = useState<string | null>(null);
+    // ** Removed activeContextMessageId as click trigger is removed **
 
     // --- Document Management Callbacks ---
     const triggerDocListRefresh = useCallback(() => {
         setRefreshDocListTrigger(prev => prev + 1);
-        console.log("Document list refresh triggered from page.");
+        console.log("[Page] Document list refresh triggered.");
     }, []);
 
     // --- Scope Selection Callbacks ---
@@ -73,7 +73,7 @@ export default function Home() {
         setSelectedFilenames(prev => {
             const newSet = new Set(prev);
             if (newSet.has(filename)) { newSet.delete(filename); } else { newSet.add(filename); }
-            console.log("Selected filenames changed:", newSet);
+            console.log("[Page] Selected filenames changed:", newSet);
             return newSet;
         });
     }, []);
@@ -81,21 +81,16 @@ export default function Home() {
     // --- UI Callbacks ---
     const toggleSidebar = useCallback(() => { setIsSidebarOpen(prev => !prev); }, []);
 
-    // --- Removed showContextForMessage callback ---
-
     // --- Chat Logic Callbacks ---
     const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement> | string) => {
         setInput(typeof event === 'string' ? event : event.target.value);
     };
 
     const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            handleSubmit();
-        }
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); }
     };
 
-    // --- Updated stopStreaming to clear all context displays ---
+    // --- Updated stopStreaming ---
     const stopStreaming = useCallback(() => {
         if (streamAbortController.current) {
             streamAbortController.current.abort(); streamAbortController.current = null;
@@ -103,13 +98,14 @@ export default function Home() {
         } else { console.log("[Page] No active stream to abort."); }
         setIsAsking(false);
         setCurrentAIMessageId(null);
+        // Clear all context displays on stop
         setActiveRagContext(null);
         setActiveObservationData(null);
         setActiveObservationTool(null);
-        setActiveContextSteps(null); // Also clear raw steps display on stop
-    }, []);
+        setActiveContextSteps(null);
+    }, []); // No dependencies needed that change
 
-    // --- Updated handleSubmit for Automatic Context Display ---
+    // --- UPDATED handleSubmit ---
     const handleSubmit = useCallback(async (event?: React.FormEvent | string) => {
         let query = '';
         if (typeof event === 'string') { query = event; }
@@ -123,7 +119,7 @@ export default function Home() {
 
         setInput(''); setIsAsking(true); setAskError(null);
         setCurrentAIMessageId(aiMessageId);
-        // Clear all right-pane displays immediately
+        // Clear all right-pane displays for new request
         setActiveContextSteps(null);
         setActiveRagContext(null);
         setActiveObservationData(null);
@@ -139,51 +135,57 @@ export default function Home() {
             const payload: AskPayload = { question: query, filenames: filenamesArray.length > 0 ? filenamesArray : undefined, tag_filter: selectedTag === ALL_DOCUMENTS_VALUE ? undefined : selectedTag, chat_history: historyToSend.length > 0 ? historyToSend : undefined };
             console.log("[Page] Sending payload:", payload);
 
-            // --- Define Stream Callbacks for Automatic Context Display ---
+            // --- Define Stream Callbacks with Refined Context Logic ---
             const callbacks: StreamCallbacks = {
                 onOpen: () => console.log(`[Page] Stream opened: ${aiMessageId}`),
 
                 onToken: (token) => {
-                    // Clear RAG/Observation when final answer starts streaming
+                    // **MODIFIED:** Only clear RAG context. Keep Observation/Steps visible.
                     setActiveRagContext(null);
-                    setActiveObservationData(null);
-                    setActiveObservationTool(null);
-                    // Leave Steps potentially visible if they arrived before tokens
-                    // setActiveContextSteps(null); // Optional: clear steps too
+                    // setActiveObservationData(null); setActiveObservationTool(null); // DO NOT CLEAR OBSERVATION HERE
+                    // setActiveContextSteps(null); // DO NOT CLEAR STEPS HERE
                     setMessages(prev => prev.map(msg => msg.id === aiMessageId ? { ...msg, text: msg.text + token } : msg));
                 },
 
                 onRagContext: (contextDocs) => {
-                    console.log(`[Page] RAG Context received (${contextDocs.length} docs)`);
-                    // Display RAG context, clear others
+                    console.log(`[Page] RAG Context (${contextDocs.length} docs)`);
+                    // Show RAG context, clear others
                     setActiveContextSteps(null);
                     setActiveObservationData(null);
                     setActiveObservationTool(null);
-                    setActiveRagContext(contextDocs);
+                    setActiveRagContext(contextDocs); // Display RAG context
                 },
 
                 onStep: (step) => {
                     console.log("[Page] onStep (Partial):", step.action);
-                    // Display raw steps, clear others
+                    // --- MODIFICATION: Only clear observation if it's not already showing --- //
+                    // Show raw steps, clear RAG.
                     setActiveRagContext(null);
-                    setActiveObservationData(null);
-                    setActiveObservationTool(null);
+                    // **Only clear observation pane if it wasn't just intentionally set**
+                    // We can check if activeObservationData is currently null before clearing it.
+                    // A slightly safer check might involve a dedicated flag, but this should work.
+                    if (activeObservationData === null) { // Check if observation pane is currently empty
+                         setActiveObservationData(null); // Ensure it's clear
+                         setActiveObservationTool(null);
+                    }
+                    // ---------------------------------------------------------------------- //
+
                     const stepToAdd = isAgentAction(step.action) ? { ...step, observation: '⏳ Processing...' } : step;
-                    // Add step to message state AND display raw steps
-                    setMessages(prev => {
+                    setMessages(prev => { // Update message state
                         const msgIndex = prev.findIndex(m => m.id === aiMessageId);
                         if (msgIndex === -1) return prev;
                         const targetMsg = prev[msgIndex];
                         const updatedSteps = [...(targetMsg.intermediate_steps || []), stepToAdd];
-                        const updatedMsg = { ...targetMsg, intermediate_steps: updatedSteps };
                         setActiveContextSteps(updatedSteps); // Update right pane with steps
+                        const updatedMsg = { ...targetMsg, intermediate_steps: updatedSteps };
                         const newMessages = [...prev]; newMessages[msgIndex] = updatedMsg;
                         return newMessages;
                     });
                 },
 
                 onStepFinal: (finalStep) => {
-                    console.log("[Page] onStepFinal:", finalStep.action);
+                    // Fix 1: Log the entire step object
+                    console.log("[Page] onStepFinal received step:", finalStep);
                     setActiveRagContext(null); // Clear RAG display
 
                     let toolName: string | null = null;
@@ -207,23 +209,43 @@ export default function Home() {
                         return newMessages;
                     });
 
-                    // Now update the context pane display based on the final observation
+                    // --- Add Detailed Logging Before Decision ---
+                    console.log(`[Page] onStepFinal - Checking observation for Pane Display:`, {
+                        observationValue: observation,
+                        isArray: Array.isArray(observation),
+                        typeofValue: typeof observation,
+                        isProcessing: observation === '⏳ Processing...',
+                        conditionResult: (observation && observation !== '⏳ Processing...' && (Array.isArray(observation) || (typeof observation === 'object' && observation !== null)))
+                    });
+                    // -------------------------------------------
+
+                    // Update Context Pane based on final observation
                     if (observation && observation !== '⏳ Processing...' && (Array.isArray(observation) || (typeof observation === 'object' && observation !== null))) {
-                        console.log(`[Page] Displaying formatted Observation for tool: ${toolName}`);
-                        setActiveObservationData(observation); // Show formatted observation
-                        setActiveObservationTool(toolName);
-                        setActiveContextSteps(null); // Hide raw steps when showing observation
+                         console.log(`[Page] Displaying Formatted Observation for tool: ${toolName}`);
+                         setActiveObservationData(observation); // Show formatted observation
+                         setActiveObservationTool(toolName);
+                         setActiveContextSteps(null); // Hide raw steps when showing observation
                     } else {
-                        // If observation is simple/missing, ensure observation display is clear
-                        // and potentially show the final raw steps list
-                        console.log("[Page] Observation is simple/missing, clearing observation display (steps might show).");
-                        setActiveObservationData(null);
-                        setActiveObservationTool(null);
-                        // Find updated steps array from state (needed because setMessages is async)
-                        const finalStepsForDisplay = messages.find(m => m.id === aiMessageId)?.intermediate_steps;
-                        setActiveContextSteps(finalStepsForDisplay || [finalStep]); // Show final steps
+                         console.log("[Page] Observation is simple/missing, showing steps display.");
+                         setActiveObservationData(null); // Ensure observation is clear
+                         setActiveObservationTool(null);
+                         // Fix 2: Use newStepsArray directly for setActiveContextSteps
+                         // Need to find the final steps array from the *just updated* state.
+                         // Reading state again is tricky, let's use the calculated array if possible.
+                         // Note: newStepsArray was calculated within the setMessages update above.
+                         // We need access to it here. Let's recalculate it briefly or pass it.
+                         // For simplicity here, let's rely on the fact that setMessages above updated the steps.
+                         // We might need a useEffect if this proves unreliable.
+
+                         // Find the updated message again (safer approach)
+                         setMessages(prev => {
+                             const updatedMessage = prev.find(m => m.id === aiMessageId);
+                             const finalStepsForDisplay = updatedMessage?.intermediate_steps;
+                             setActiveContextSteps(finalStepsForDisplay || null); // Show final steps (or null if none)
+                             return prev; // No actual message change here, just reading
+                         });
                     }
-                },
+                }, // End onStepFinal
 
                 onError: (error) => {
                     const errorMsg = typeof error === 'string' ? error : (error as any)?.message || "Streaming error.";
@@ -238,12 +260,11 @@ export default function Home() {
                     setIsAsking(false);
                     setCurrentAIMessageId(null);
                     streamAbortController.current = null;
-                    // Clear temporary displays on completion
-                    setActiveRagContext(null);
-                    setActiveObservationData(null);
-                    setActiveObservationTool(null);
-                    // Decide if final steps should remain visible
-                    // setActiveContextSteps(null);
+                    // Fix 3: DO NOT clear observation/steps on normal completion
+                    setActiveRagContext(null); // Still clear RAG context
+                    // setActiveObservationData(null); // Keep observation visible
+                    // setActiveObservationTool(null); // Keep observation tool name
+                    // setActiveContextSteps(null); // Keep steps visible (if they were the last thing shown)
                  },
             }; // End callbacks
 
@@ -260,9 +281,8 @@ export default function Home() {
          }
     }, [
         // Dependencies
-        input, isAsking, selectedFilenames, selectedTag, messages, // Include messages for history
-        stopStreaming // Include stopStreaming
-        // Removed showContextForMessage and activeContextMessageId
+        input, isAsking, selectedFilenames, selectedTag, messages, stopStreaming
+        // Removed showContextForMessage, activeContextMessageId
     ]);
 
 
@@ -280,10 +300,7 @@ export default function Home() {
         <div className="flex flex-col h-screen max-h-screen bg-background text-foreground overflow-hidden">
 
             {/* Hidden Upload Component */}
-            <UploadDropdown
-                ref={uploadDropdownRef}
-                onUploadComplete={(success) => { if (success) { triggerDocListRefresh(); } }}
-            />
+            <UploadDropdown ref={uploadDropdownRef} onUploadComplete={(success) => { if (success) { triggerDocListRefresh(); } }}/>
 
             {/* Top Bar */}
             <header className="h-14 flex-shrink-0 border-b flex items-center justify-between px-4">
@@ -307,28 +324,24 @@ export default function Home() {
 
                  {/* Center Interaction Pane */}
                  <section className="flex-grow flex flex-col overflow-hidden border-r">
-                    {/* Chat Messages now doesn't need context props */}
+                    {/* Chat Messages - Removed context props */}
                     <ChatMessages
                         messages={messages}
                         isAsking={isAsking}
                         currentAIMessageId={currentAIMessageId}
-                        // removed activeContextMessageId
-                        // removed onShowContext
+                        // No context props needed here anymore
                     />
+                    {/* Integrated Input */}
                     <IntegratedInput
-                        input={input}
-                        handleInputChange={handleInputChange}
-                        handleSubmit={handleSubmit}
-                        handleKeyDown={handleKeyDown}
-                        stopStreaming={stopStreaming}
-                        isAsking={isAsking}
-                        askError={askError}
-                        scopeText={getScopeText()}
+                        input={input} handleInputChange={handleInputChange}
+                        handleSubmit={handleSubmit} handleKeyDown={handleKeyDown}
+                        stopStreaming={stopStreaming} isAsking={isAsking}
+                        askError={askError} scopeText={getScopeText()}
                         onToggleSidebar={toggleSidebar}
                     />
                  </section>
 
-                 {/* Right Context Pane - UPDATED Conditional Rendering for Automatic Display */}
+                 {/* Right Context Pane - Conditional Rendering */}
                  <aside className="w-80 flex-shrink-0 bg-card overflow-y-auto border-l">
                     {/* Priority: RAG Context > Formatted Observation > Raw Steps > Placeholder */}
                     {activeRagContext ? (
@@ -339,14 +352,12 @@ export default function Home() {
                             toolName={activeObservationTool}
                         />
                     ) : activeContextSteps && activeContextSteps.length > 0 ? (
-                        // Fallback to raw steps display if no other context active
                         <StepsDisplay steps={activeContextSteps} />
                     ) : (
-                         // Default placeholder when no context/steps/observation active
+                         // Default placeholder
                          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-6">
                              <Info size={40} className="mb-4 opacity-40" />
                              <p className="text-sm font-medium text-foreground/90">Context Pane</p>
-                             {/* Simplified message */}
                              <p className="text-xs mt-2">Detailed context like agent steps,</p>
                              <p className="text-xs mt-1">retrieved documents, or tool results</p>
                              <p className="text-xs mt-1">will appear here automatically.</p>

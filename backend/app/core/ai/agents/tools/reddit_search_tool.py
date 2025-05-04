@@ -65,7 +65,7 @@ def search_reddit(
     sort: str = "relevance",
     time_filter: str = "week",
     limit: int = 5,
-) -> List[Dict[str, Any]] | str: # <-- CHANGED return type annotation
+) -> List[Dict[str, Any]] | str: # <-- REVERT return type annotation
     """Searches Reddit for posts matching the query and criteria. Use this to find community discussions, opinions, or experiences.
 
     Args:
@@ -76,7 +76,7 @@ def search_reddit(
         limit (int): Max number of posts to return (1-100). Defaults to 5. Be mindful of result size.
 
     Returns:
-        A list of dictionaries, where each dictionary represents a Reddit post and contains keys like 'title', 'score', 'id', 'subreddit', 'url', 'created_utc', 'body'. Returns an error string if the search fails or the tool is disabled.
+        A list of dictionaries, where each dictionary represents a Reddit post and contains keys like 'post_title', 'post_score', 'post_id', 'post_subreddit', 'post_url', 'post_text', 'post_author'. Returns an error string if the search fails or the tool is disabled.
     """
     global _REDDIT_WRAPPER_INSTANCE
     logger.info(f"Reddit Search Tool invoked. Query='{query}', Subreddit='{subreddit}', Sort='{sort}', Time='{time_filter}', Limit={limit}")
@@ -97,13 +97,16 @@ def search_reddit(
         )
         # ---------------------------------------------------------------------
 
-        logger.info(f"Reddit search successful, found {len(results)} posts.")
+        num_found = len(results)
+        logger.info(f"Reddit search successful, found {num_found} posts.")
 
-        # Return the structured list
+        # --- MODIFICATION REVERTED: Return structured list --- #
+        # Convert author to string just in case
         return [
             {**post, "post_author": str(post.get("post_author"))}
             for post in results
         ]
+        # ----------------------------------------------------- #
 
     except Exception as exc:
         logger.exception("Reddit search failed during API call: %s", exc)
