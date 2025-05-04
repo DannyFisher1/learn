@@ -15,6 +15,12 @@ from app.utils import get_logger, serialize_intermediate_steps # Import serializ
 from app.core.ai.agents.executor import get_agent_executor # Agent executor function
 # logger = get_logger(__name__) # Keep logger import commented out if needed elsewhere
 
+from langchain_core.documents import Document
+
+
+logger = get_logger(__name__)
+
+
 # (AgentNotReadyError class definition if not in common.py)
 class AgentNotReadyError(Exception):
     """Exception raised when the agent is not ready to stream."""
@@ -158,27 +164,23 @@ async def handle_chat_request(request: schemas.AskRequest) -> schemas.AskRespons
         intermediate_steps=intermediate_steps
     )
 
-# --- REFACTORED Streaming Function using astream_events ---
 async def handle_chat_request_stream(request: schemas.AskRequest) -> AsyncGenerator[Dict[str, str], None]:
     """
     Handles a chat request and streams the agent's response using Server-Sent Events,
-    parsing events from Langchain's `astream_events`.
+    parsing events from Langchain's `astream_events`. Now includes yielding RAG context.
 
     Yields:
         Dict[str, str]: Dictionaries containing 'event' and 'data' keys for SSE.
-                       The 'data' value must be a JSON-encoded string.
+                       Includes 'token', 'step', 'step_final', 'rag_context', 'error', 'end'.
     """
-    # --- Input Preparation (Same as non-streaming version) ---
-    # ... (filter prep, logging, input prep, history mapping - unchanged) ...
+    # --- Input Preparation (remains the same) ---
     filters = {}
-    if request.filenames:
-        filters["source_file"] = request.filenames
-    if request.tag_filter:
-        filters["tag"] = request.tag_filter
+    if request.filenames: filters["source_file"] = request.filenames
+    if request.tag_filter: filters["tag"] = request.tag_filter
 
-    # filter_log = f"Filenames={request.filenames}" if request.filenames else "None"
-    # filter_log += f", Tag='{request.tag_filter}'" if request.tag_filter else ""
-    # logger.info(f"Handling STREAMING chat request (astream_events). Question: '{request.question[:100]}...' Filters: {filter_log}")
+    filter_log = f"Filenames={request.filenames}" if request.filenames else "None"
+    filter_log += f", Tag='{request.tag_filter}'" if request.tag_filter else ""
+    logger.info(f"Streaming request. Question: '{request.question[:100]}...' Filters: {filter_log}")
 
     base_question = request.question
     input_prefix = ""
@@ -197,180 +199,120 @@ async def handle_chat_request_stream(request: schemas.AskRequest) -> AsyncGenera
     agent_main_input = f"{input_prefix}{base_question}"
     agent_input: Dict[str, Any] = {"input": agent_main_input}
 
+    def serialize_documents(documents: List[Document]) -> List[Dict[str, Any]]:
+        return [doc.to_dict() for doc in documents]
+
     if request.chat_history:
         langchain_history: List[BaseMessage] = []
         for msg in request.chat_history:
             sender = msg.get('sender')
             text = msg.get('text', '')
-            if sender == 'user':
-                langchain_history.append(HumanMessage(content=text))
-            elif sender == 'ai':
-                langchain_history.append(AIMessage(content=text))
+            if sender == 'user': langchain_history.append(HumanMessage(content=text))
+            elif sender == 'ai': langchain_history.append(AIMessage(content=text))
         agent_input["chat_history"] = langchain_history
-        # logger.info(f"Passing {len(langchain_history)} mapped history turns to agent (streaming/events).")
-    # else:
-        # logger.info("No chat history provided (streaming/events).")
+        logger.info(f"Passing {len(langchain_history)} history turns to agent (streaming).")
+    else:
+        logger.info("No chat history provided (streaming).")
 
-    # logger.debug(f"Final agent input dictionary for streaming/events: {agent_input}")
+    logger.debug(f"Agent input for streaming: {agent_input}")
 
-    # --- Streaming Logic using astream_events ---
-    current_action: AgentAction | None = None # Store the action when tool starts
-    agent_executor = None # Initialize agent_executor to None
+    # --- Streaming Logic ---
+    current_action: AgentAction | None = None
+    agent_executor = None
+    combine_docs_chain_name = "RunnableAssign<context>|RunnableParallel<input,context>|RunnableAssign<answer>" # Default name often complex, adjust if needed
 
     try:
-        # --- Added Logging ---
-        # logger.info("Attempting to get agent executor...")
-        agent_executor = get_agent_executor()
-        if agent_executor:
-             pass # logger.info("Successfully retrieved agent executor.")
-        else:
-             # logger.error("Failed to retrieve agent executor (get_agent_executor returned None).")
-             # Yield error and end if executor retrieval failed
-             yield {"event": "error", "data": json.dumps({"error": "Failed to initialize AI agent."})}
-             yield {"event": "end", "data": json.dumps({}) }
-             return # Exit the generator
-        # ---------------------
+        logger.info("Getting agent executor...")
+        agent_executor = get_agent_executor() # Retrieve executor
+        if not agent_executor:
+             raise AgentNotReadyError("Failed to initialize agent executor.") # Raise specific error
 
-        # logger.info(f"Invoking agent executor astream_events for: '{agent_main_input[:150]}...'" )
-        # logger.info("Entering astream_events loop...") # <<< Added Log
-        
-        # Use astream_events
+        logger.info(f"Invoking agent executor astream_events for: '{agent_main_input[:150]}...'")
+
         async for event in agent_executor.astream_events(agent_input, version="v1"):
-            # --- Added Logging ---
-            # logger.debug(f"[astream_events] Received event: {event.get('event')}, Name: {event.get('name')}, Run ID: {event.get('run_id')}")
-            # --- Re-enable more detailed logging ---
-            # logger.debug(f"[astream_events] Event: {event['event']}, Name: {event.get('name', '')}, Run ID: {event.get('run_id')}, Data Keys: {list(event.get('data', {}).keys())}")
-            # ---------------------------------------
             kind = event["event"]
-            name = event.get("name", "") # Name of the runnable that emitted the event
-            event_data = event.get("data", {}) # The actual data payload
-            run_id = event.get("run_id") # ID of the specific run
-            # logger.debug(f"[astream_events] Event: {kind}, Name: {name}, Run ID: {run_id}, Data: {event_data}")
+            name = event.get("name", "")
+            event_data = event.get("data", {})
+            run_id = event.get("run_id") # For correlation if needed
+            tags = event.get("tags", []) # Tags might help identify chains
 
-            # --- Updated Condition ---
-            if kind == "on_llm_stream" or kind == "on_chat_model_stream":
-            # -----------------------
-                # Extract and yield token chunk
+            # logger.debug(f"[SSE Stream] Event: {kind}, Name: {name}, Tags: {tags}, Data Keys: {list(event_data.keys())}")
+
+            # --- Yield RAG Context Event ---
+            # Identify the start of the combine docs chain.
+            # The exact name/tags might vary based on LangChain version and agent setup.
+            # Check if the chain that 'create_stuff_documents_chain' creates is starting.
+            # Often the input data structure is a good clue ('input' and 'context' keys).
+            if kind == "on_chain_start":
+                chain_input = event_data.get("input", {})
+                # Check if input looks like what combine_docs_chain expects
+                if isinstance(chain_input, dict) and "input" in chain_input and "context" in chain_input:
+                    context_docs = chain_input.get("context")
+                    # Verify it's a list and likely contains Document objects
+                    if isinstance(context_docs, list) and (len(context_docs) == 0 or isinstance(context_docs[0], Document)):
+                        logger.info(f"Detected start of potential CombineDocsChain (Name: {name}). Found {len(context_docs)} context docs.")
+                        try:
+                            serialized_context = serialize_documents(context_docs) # Use the helper
+                            if serialized_context:
+                                logger.debug(f"Yielding rag_context event with {len(serialized_context)} serialized docs.")
+                                yield {"event": "rag_context", "data": json.dumps({"context": serialized_context})}
+                            else:
+                                logger.info("No context documents to yield for rag_context event.")
+                        except Exception as e:
+                             logger.error(f"Failed to serialize/yield RAG context: {e}", exc_info=True)
+                             # Optionally yield an error event for context failure
+                             # yield {"event": "error", "data": json.dumps({"error": f"Failed to process RAG context: {e}"})}
+
+            # --- Yield Token Event ---
+            elif kind == "on_llm_stream" or kind == "on_chat_model_stream":
                 chunk_content = event_data.get("chunk", "")
+                token = None
                 if isinstance(chunk_content, str) and chunk_content:
-                    # logger.debug(f"Yielding token: '{chunk_content}'")
-                    # --- Added log before yielding token ---
-                    # logger.debug(f"Yielding token event: {chunk_content[:50]}...") 
-                    # ---------------------------------------
-                    yield {"event": "token", "data": json.dumps({"token": chunk_content})}
-                elif isinstance(chunk_content, AIMessageChunk): # Handle AIMessageChunk if present
-                    if chunk_content.content and isinstance(chunk_content.content, str):
-                        # logger.debug(f"Yielding token from AIMessageChunk: '{chunk_content.content}'")
-                        # --- Added log before yielding token --- 
-                        # logger.debug(f"Yielding token event (from AIMessageChunk): {chunk_content.content[:50]}...") 
-                        # ---------------------------------------
-                        yield {"event": "token", "data": json.dumps({"token": chunk_content.content})}
-            
+                    token = chunk_content
+                elif isinstance(chunk_content, AIMessageChunk) and chunk_content.content and isinstance(chunk_content.content, str):
+                     token = chunk_content.content
+
+                if token:
+                    # logger.debug(f"Yielding token: {token[:50]}...") # Less verbose logging
+                    yield {"event": "token", "data": json.dumps({"token": token})}
+
+            # --- Yield Partial Step Event ---
             elif kind == "on_tool_start":
-                # Tool execution is starting, capture the action
-                # --- Log the raw event data for inspection ---
-                # logger.debug(f"[on_tool_start] Raw event: {event}")
-                # ---------------------------------------------
-                
-                tool_name = event.get("name") # Often the tool name is here
-                tool_input_data = event_data.get("input") # Often the input dict/str is here
-
-                # --- Attempt to construct AgentAction --- 
-                if tool_name and tool_input_data is not None: 
+                tool_name = event.get("name")
+                tool_input_data = event_data.get("input")
+                if tool_name and tool_input_data is not None:
                     try:
-                        # Create the AgentAction object
-                        constructed_action = AgentAction(
-                            tool=str(tool_name), 
-                            tool_input=tool_input_data, 
-                            log=f"Attempting tool {tool_name} with input {tool_input_data}" # Basic log message
-                        )
-                        current_action = constructed_action # Store the constructed action
-                        # logger.info(f"Tool Start (Constructed Action): {current_action.tool}, Input: {current_action.tool_input}")
-                        
-                        # Create and yield the partial step using the *constructed* action
-                        step_tuple_with_placeholder: List[Tuple[AgentAction, str]] = [(current_action, "⏳ Processing...")]
-                        serialized_steps = serialize_intermediate_steps(step_tuple_with_placeholder)
-                        if serialized_steps:
-                            # logger.debug(f"Yielding step event (from constructed action): {serialized_steps[0]}")
-                            yield {"event": "step", "data": json.dumps({"step": serialized_steps[0]})}
-                        # else:
-                            # logger.warning("Serialization resulted in empty partial step (constructed action), not yielding.")
-                    except Exception as construction_error:
-                        # logger.error(f"Failed to construct AgentAction or serialize step: {construction_error}", exc_info=True)
-                        current_action = None # Ensure it's None on error
-                        yield {"event": "error", "data": json.dumps({"error": f"Failed processing tool start: {construction_error}"})}
-                else:
-                    # If we couldn't get name/input, log and set current_action to None
-                    # logger.warning(f"on_tool_start event missing tool name ('{tool_name}') or input data ('{tool_input_data}') in expected keys.")
-                    current_action = None
-            
-            elif kind == "on_tool_end":
-                # Tool execution finished, capture the observation
-                # --- Add log to inspect event_data['output'] ---
-                # logger.debug(f"[on_tool_end] Event Data Output: {event_data.get('output')}") 
-                # ---------------------------------------------
-                observation = event_data.get("output") # Tool output is often here
-                if observation is not None and current_action is not None:
-                     # logger.info(f"Tool End: {current_action.tool}, Observation: {str(observation)[:100]}...")
-                     # Create the final step tuple
-                     step_tuple: List[Tuple[AgentAction, Any]] = [(current_action, observation)]
-                     
-                     # --- Add finer logging around step_final --- 
-                     # logger.debug("Attempting to serialize final step...") 
-                     try:
-                         serialized_steps = serialize_intermediate_steps(step_tuple)
-                         # logger.debug("Final step serialized successfully.")
-                         if serialized_steps:
-                             # Yield the complete step data using 'step_final' event
-                             step_final_data = {"event": "step_final", "data": json.dumps({"step": serialized_steps[0]})}
-                             # logger.debug(f"Prepared step_final_data: {step_final_data}")
-                             # --- Wrap yield in try/except --- 
-                             try:
-                                 # logger.debug("Attempting to yield step_final...")
-                                 yield step_final_data
-                                 # logger.debug("Successfully yielded step_final.")
-                             except Exception as yield_err:
-                                 pass # logger.error(f"Error *during* yield of step_final: {yield_err}", exc_info=True)
-                             # ------------------------------
-                         # else:
-                              # logger.warning("Serialization resulted in empty final step, not yielding.")
-                     except Exception as e:
-                         # logger.error(f"Serialization failed for final step: {e}", exc_info=True)
-                         # --- Yield error if serialization fails --- 
-                         try:
-                             yield {"event": "error", "data": json.dumps({"error": f"Failed to process final step: {e}"})}
-                         except Exception as yield_err_inner:
-                             pass # logger.error(f"Error *during* yield of serialization error: {yield_err_inner}", exc_info=True)
-                         # -----------------------------------------
-                     # Reset current_action after processing the observation
-                     current_action = None 
-                # elif current_action is None:
-                     # logger.warning("on_tool_end event received but no corresponding action was stored.")
-                # else: # observation was None
-                     # logger.warning(f"on_tool_end event received for {name} but observation (data['output']) was None.")
+                        current_action = AgentAction(tool=str(tool_name), tool_input=tool_input_data, log="...")
+                        step_tuple: List[Tuple[AgentAction, str]] = [(current_action, "⏳ Processing...")]
+                        serialized = serialize_intermediate_steps(step_tuple)
+                        if serialized: yield {"event": "step", "data": json.dumps({"step": serialized[0]})}
+                    except Exception as e:
+                        logger.error(f"Error processing on_tool_start: {e}")
+                        current_action = None
+                else: current_action = None
 
-            # --- Can add handling for other event types like on_agent_end if needed ---
-            elif kind == "on_chain_end" and name == "AgentExecutor": # Check if this is the end of the main agent run
-                # Could potentially extract final answer/steps here if needed, but tokens/tool events are preferred
-                final_output = event_data.get("output", {})
-                if isinstance(final_output, dict):
-                    agent_outcome = final_output.get("output") # Final textual answer
-                    # final_steps = final_output.get("intermediate_steps") # Steps might also be here
-                    # logger.debug(f"AgentExecutor Finished. Final Answer: {agent_outcome}")
-        
-        # --- End of event loop ---
-        # logger.info("Agent event stream finished.")
-        yield {"event": "end", "data": json.dumps({}) } # Signal end of stream
+            # --- Yield Final Step Event ---
+            elif kind == "on_tool_end":
+                observation = event_data.get("output")
+                if observation is not None and current_action is not None:
+                    try:
+                        step_tuple: List[Tuple[AgentAction, Any]] = [(current_action, observation)]
+                        serialized = serialize_intermediate_steps(step_tuple)
+                        if serialized: yield {"event": "step_final", "data": json.dumps({"step": serialized[0]})}
+                    except Exception as e:
+                         logger.error(f"Error processing on_tool_end: {e}")
+                         yield {"event": "error", "data": json.dumps({"error": f"Failed to process tool result: {e}"})}
+                    current_action = None # Reset action
+
+        # --- End of Stream ---
+        logger.info("Agent event stream finished.")
+        yield {"event": "end", "data": json.dumps({}) }
 
     except AgentNotReadyError as anre:
-        # --- Added Logging ---
-        # logger.error(f"AgentNotReadyError caught during streaming: {anre}", exc_info=True)
-        # ---------------------
-        yield {"event": "error", "data": json.dumps({"error": f"Agent not ready: {anre}"})} 
-        yield {"event": "end", "data": json.dumps({}) } # Ensure stream ends
+        logger.error(f"AgentNotReadyError during streaming setup: {anre}", exc_info=True)
+        yield {"event": "error", "data": json.dumps({"error": f"Agent not ready: {anre}"})}
+        yield {"event": "end", "data": json.dumps({}) }
     except Exception as e:
-        # --- Added Logging ---
-        # logger.error(f"Generic Exception caught during streaming: {e}", exc_info=True)
-        # ---------------------
-        yield {"event": "error", "data": json.dumps({"error": f"An unexpected error occurred: {e}"})} 
-        yield {"event": "end", "data": json.dumps({}) } # Ensure stream ends
+        logger.error(f"Unexpected error during streaming: {e}", exc_info=True)
+        yield {"event": "error", "data": json.dumps({"error": f"An unexpected error occurred: {e}"})}
+        yield {"event": "end", "data": json.dumps({}) }

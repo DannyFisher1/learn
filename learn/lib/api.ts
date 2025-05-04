@@ -16,122 +16,118 @@ export interface IntermediateStep {
     observation: any;
 }
 
+// Interface for a single RAG Context Document (matches backend serialization)
+export interface RagContextDocument {
+    id: string; // e.g., "doc_0", "doc_1"
+    page_content: string;
+    metadata: {
+        source_file?: string | null;
+        page?: number | string | null; // Allow number or string for page
+        tag?: string | null;
+        file_type?: string | null;
+        // Add other relevant metadata fields if needed
+    };
+}
+
+// Main Message interface used in the frontend state
 export interface Message {
   sender: 'user' | 'ai';
   text: string;
-  sources?: { source: string; page: number | string }[];
-  id?: string;
-  intermediate_steps?: IntermediateStep[];
+  sources?: { source: string; page: number | string }[]; // Final source attribution from RAG
+  id?: string; // Unique ID for React keys and tracking
+  intermediate_steps?: IntermediateStep[]; // Steps taken by the agent for this message
+  // Optional: Store related RAG context directly on the message? Currently handled in page state.
+  // rag_context?: RagContextDocument[] | null;
 }
 
-/**
- * Payload structure for uploading a file.
- * Changed 'category' to 'tag'.
- */
+// Payload for file uploads
 export interface UploadFilePayload {
     file: File;
-    tag?: string; // <<< CHANGED from category to tag
+    tag?: string; // Optional tag/category
 }
 
-/**
- * Payload structure for asking a question to the agent.
- * Added 'tag_filter'.
- */
+// Payload for asking questions (supports filtering and history)
 export interface AskPayload {
   question: string;
-  filenames?: string[];
-  tag_filter?: string | null;
-  chat_history?: Message[];
+  filenames?: string[]; // Optional list of filenames to filter RAG
+  tag_filter?: string | null; // Optional tag to filter RAG
+  chat_history?: Array<{ sender: 'user' | 'ai'; text: string }>; // Simplified history format
 }
 
-/**
- * Expected data structure of the successful JSON response from the `/ask` endpoint.
- */
+// Response structure for the non-streaming /ask endpoint
 export interface AskResponseData {
   answer: string;
-  source_documents?: { source: string; page: number | string }[];
-  intermediate_steps?: IntermediateStep[];
+  source_documents?: { source: string; page: number | string }[]; // Final sources used
+  intermediate_steps?: IntermediateStep[]; // Complete steps for the request
 }
 
-/**
- * Basic information about an indexed document.
- * Added optional 'tag' and 'file_type'.
- */
+// Basic information about an indexed document
 export interface DocumentInfo {
     filename: string;
     tag?: string | null;
     file_type?: string | null;
 }
 
-/**
- * Response structure for the endpoint listing indexed documents.
- * Uses the updated DocumentInfo.
- */
+// Response structure for listing documents
 export interface DocumentList {
     documents: DocumentInfo[];
 }
 
-/**
- * Response structure for the endpoint reporting the current AI provider status.
- */
+// Response structure for provider status
 export interface ProviderStatus {
-    current_provider: 'ollama' | 'openai' | string;
+    current_provider: 'ollama' | 'openai' | string; // Allow string for potential future providers
     message: string;
 }
 
-/**
- * Payload structure for requesting an AI provider switch.
- */
+// Payload for switching provider
 export interface SetProviderPayload {
     provider: 'ollama' | 'openai';
 }
 
-// --- NEW: Interface for streamed data chunks ---
-// Matches the events yielded by the backend service
+// Interface describing the data structure within each SSE event's `data` field
 export interface StreamEventData {
-  token?: string;
-  step?: IntermediateStep; // Re-use existing IntermediateStep type
-  error?: string | { message: string }; // Can be simple string or object
+  token?: string; // For text chunks of the final answer
+  step?: IntermediateStep; // For partial agent steps (tool call started)
+  step_final?: IntermediateStep; // For completed agent steps (tool call finished with observation) - NOTE: Backend yields event 'step_final' but data key is 'step'
+  error?: string | { message: string }; // For errors during stream
+  context?: RagContextDocument[]; // For retrieved RAG context snippets
 }
 
-// --- NEW: Callback types for stream events ---
+// Type definition for the callbacks object used with askQuestionStream
 export type StreamCallbacks = {
-  onOpen?: () => void;
-  onToken?: (token: string) => void;
-  onStep?: (step: IntermediateStep) => void;
-  onStepFinal?: (step: IntermediateStep) => void;
-  onComplete?: () => void;
-  onError?: (error: StreamEventData['error']) => void;
+  onOpen?: () => void; // Called when the stream connection is established
+  onToken?: (token: string) => void; // Called for each piece of the final answer text
+  onStep?: (step: IntermediateStep) => void; // Called when a tool call starts
+  onStepFinal?: (step: IntermediateStep) => void; // Called when a tool call finishes
+  onRagContext?: (contextDocs: RagContextDocument[]) => void; // Called when RAG context is retrieved
+  onComplete?: () => void; // Called when the stream finishes normally (backend sends 'end' event or connection closes)
+  onError?: (error: StreamEventData['error'] | string) => void; // Called on stream errors or 'error' events
 };
 
 // --- API Functions ---
 
 /**
- * Uploads a file with an optional tag to the backend /documents/upload endpoint.
- * @param payload - Contains the file and optional tag.
- * @returns Promise resolving to an object with filename and success message.
+ * Uploads a file with an optional tag.
  */
 export const uploadFile = async (payload: UploadFilePayload): Promise<{ filename: string; message: string }> => {
-    console.log(`Uploading file: ${payload.file.name}, Tag: ${payload.tag || 'N/A'}`); // <<< Updated log
+    console.log(`Uploading file: ${payload.file.name}, Tag: ${payload.tag || 'N/A'}`);
     const formData = new FormData();
     formData.append('file', payload.file);
-    // --- Use 'tag' instead of 'category' ---
     if (payload.tag) {
-        formData.append('tag', payload.tag); // <<< CHANGED key to 'tag'
+        formData.append('tag', payload.tag);
     }
-    // --------------------------------------
 
-    const response = await fetch(`${API_BASE_URL}/documents/upload`, { // <<< Corrected endpoint path
+    const response = await fetch(`${API_BASE_URL}/documents/upload`, {
         method: 'POST',
         body: formData,
     });
 
     if (!response.ok) {
-        let errorDetail = `Upload failed with status: ${response.status}`;
+        let errorDetail = `Upload failed: ${response.status} ${response.statusText}`;
         try {
             const errorData = await response.json();
             errorDetail = errorData.detail || errorDetail;
-        } catch (e) { /* Ignore */ }
+        } catch (e) { /* Ignore JSON parse error */ }
         console.error("Upload API Error:", errorDetail);
         throw new Error(errorDetail);
     }
@@ -139,99 +135,71 @@ export const uploadFile = async (payload: UploadFilePayload): Promise<{ filename
 };
 
 /**
- * Sends a question to the backend agent's /ask endpoint.
- * Includes optional filename and tag filters.
- * @param payload - Contains the question, optional filters, and optional chat history.
- * @returns Promise resolving to the AskResponseData object.
+ * Sends a question for a non-streaming response. (Less used now, but kept for potential use)
  */
 export const askQuestion = async (payload: AskPayload): Promise<AskResponseData> => {
     console.log("Sending request to /ask endpoint with payload:", payload);
     const response = await fetch(`${API_BASE_URL}/ask`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      // --- Use filenames list in the body ---
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({
           question: payload.question,
-          // Conditionally include filters
           ...(payload.filenames && payload.filenames.length > 0 && { filenames: payload.filenames }),
           ...(payload.tag_filter && { tag_filter: payload.tag_filter }),
-          // Conditionally include chat history
-          ...(payload.chat_history && { chat_history: payload.chat_history }),
+          ...(payload.chat_history && { chat_history: payload.chat_history }), // Ensure backend handles this format
       }),
-      // ------------------------------------
     });
 
     if (!response.ok) {
-      let errorDetail = `Request failed: ${response.status} ${response.statusText}`;
-      try {
-        const errorData = await response.json();
-        errorDetail = errorData.detail || errorDetail;
-      } catch (e) { /* Ignore */ }
-      console.error("Ask question API error response:", { status: response.status, detail: errorDetail });
-      throw new Error(errorDetail);
+        let errorDetail = `Ask request failed: ${response.status} ${response.statusText}`;
+        try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ }
+        console.error("Ask question API error:", errorDetail);
+        throw new Error(errorDetail);
     }
-
-    const responseData: AskResponseData = await response.json();
-    console.log("Received response from /ask:", responseData);
-    return responseData;
+    return response.json();
 };
 
 /**
- * Fetches the list of currently indexed documents (including tags) from the /documents endpoint.
- * @returns Promise resolving to the list of document info objects.
+ * Fetches the list of indexed documents.
  */
 export const getDocumentList = async (): Promise<DocumentList> => {
-    console.log("Fetching document list (with tags)..."); // <<< Updated log
+    console.log("Fetching document list...");
     const response = await fetch(`${API_BASE_URL}/documents`, {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
     });
     if (!response.ok) {
-        let errorDetail = `Request failed: ${response.status} ${response.statusText}`;
-        try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* ignore */ }
+        let errorDetail = `Get documents failed: ${response.status} ${response.statusText}`;
+        try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ }
         console.error("Get document list error:", errorDetail);
         throw new Error(errorDetail);
     }
-    // The response JSON structure should match DocumentList, which now uses
-    // DocumentInfo including the optional 'tag'.
-    const data: DocumentList = await response.json();
-    console.log("Received document list:", data);
-    return data;
+    return response.json();
 };
 
 /**
- * Deletes a specified document from the backend via the /documents/{filename} endpoint.
- * @param filename - The name of the file to delete.
- * @returns Promise resolving when deletion is successful (status 204). Throws error on failure.
+ * Deletes a specified document.
  */
 export const deleteDocument = async (filename: string): Promise<void> => {
     const encodedFilename = encodeURIComponent(filename);
-    console.log(`Requesting deletion of document: ${filename} (Encoded: ${encodedFilename})`);
+    console.log(`Requesting deletion of document: ${filename}`);
     const response = await fetch(`${API_BASE_URL}/documents/${encodedFilename}`, {
         method: 'DELETE',
     });
 
     if (response.status === 204) {
         console.log(`Successfully deleted ${filename}`);
-        return; // Success (No Content)
+        return; // Success
     }
 
-    // Handle error cases
-    let errorDetail = `Failed to delete document: ${response.status} ${response.statusText}`;
-    try {
-        const errorData = await response.json();
-        errorDetail = errorData.detail || errorDetail;
-    } catch (e) { /* Ignore */ }
+    let errorDetail = `Delete failed: ${response.status} ${response.statusText}`;
+    try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ }
     console.error(`Delete document error for ${filename}:`, errorDetail);
     throw new Error(errorDetail);
 };
 
 /**
- * Fetches the current AI provider status from the /config/provider endpoint.
- * @returns Promise resolving to the provider status object.
+ * Fetches the current AI provider status.
  */
 export const getCurrentProvider = async (): Promise<ProviderStatus> => {
     console.log("Fetching current AI provider status...");
@@ -240,47 +208,35 @@ export const getCurrentProvider = async (): Promise<ProviderStatus> => {
       headers: { 'Accept': 'application/json' },
     });
     if (!response.ok) {
-      let errorDetail = `Request failed: ${response.status} ${response.statusText}`;
-      try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* ignore */ }
+      let errorDetail = `Get provider status failed: ${response.status} ${response.statusText}`;
+      try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ }
       console.error("Get provider status error:", errorDetail);
       throw new Error(errorDetail);
     }
-    const data: ProviderStatus = await response.json();
-    console.log("Received provider status:", data);
-    return data;
+    return response.json();
 };
 
 /**
- * Sends a request to the backend to switch the active AI provider via /config/provider endpoint.
- * @param payload - Contains the desired provider ('ollama' or 'openai').
- * @returns Promise resolving to the updated provider status object.
+ * Requests a switch of the active AI provider.
  */
 export const switchProvider = async (payload: SetProviderPayload): Promise<ProviderStatus> => {
     console.log(`Requesting switch to AI provider: ${payload.provider}`);
     const response = await fetch(`${API_BASE_URL}/config/provider`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      let errorDetail = `Request failed: ${response.status} ${response.statusText}`;
-      try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* ignore */ }
+      let errorDetail = `Switch provider failed: ${response.status} ${response.statusText}`;
+      try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ }
       console.error("Switch provider error:", errorDetail);
       throw new Error(errorDetail);
     }
-    const data: ProviderStatus = await response.json();
-    console.log("Received switch provider response:", data);
-    return data;
+    return response.json();
 };
 
 /**
- * Sends a question to the backend's /ask-stream endpoint and handles the SSE stream.
- * @param payload - Contains the question, optional filters, and optional chat history.
- * @param callbacks - Object containing functions to handle stream events (onOpen, onToken, onStep, onComplete, onError).
- * @returns An AbortController instance to allow cancelling the stream.
+ * Initiates a streaming chat request and handles Server-Sent Events (SSE).
  */
 export const askQuestionStream = (
     payload: AskPayload,
@@ -288,147 +244,143 @@ export const askQuestionStream = (
 ): AbortController => {
     console.log("Connecting to /ask-stream endpoint with payload:", payload);
     const abortController = new AbortController();
-    const { onOpen, onToken, onStep, onComplete, onError } = callbacks;
+    const { onOpen, onToken, onStep, onStepFinal, onRagContext, onComplete, onError } = callbacks;
 
+    // --- SSE Parser Helper Function ---
+    const parseAndHandleSSEData = ( event: string | null, data: string, cbs: StreamCallbacks ) => {
+        const eventType = event || 'message'; // SSE default event type
+        try {
+            const parsedData: StreamEventData = JSON.parse(data); // Assumes data is always valid JSON
+
+            // console.debug(`[SSE Parser] Event='${eventType}', Data:`, parsedData); // Verbose debug log
+
+            if (eventType === 'token' && typeof parsedData.token === 'string' && cbs.onToken) {
+                cbs.onToken(parsedData.token);
+            } else if (eventType === 'step' && parsedData.step && cbs.onStep) {
+                cbs.onStep(parsedData.step);
+            } else if (eventType === 'step_final' && parsedData.step && cbs.onStepFinal) {
+                 // Note: Backend sends event='step_final', but data key is 'step'
+                 cbs.onStepFinal(parsedData.step);
+            } else if (eventType === 'rag_context' && Array.isArray(parsedData.context) && cbs.onRagContext) {
+                 console.log(`[SSE Parser] Identified 'rag_context' with ${parsedData.context.length} docs.`);
+                 cbs.onRagContext(parsedData.context as RagContextDocument[]); // Pass validated context
+            } else if (eventType === 'error' && parsedData.error && cbs.onError) {
+                 cbs.onError(parsedData.error);
+            } else if (eventType === 'end') {
+                 console.log("[SSE Parser] Received 'end' event signal."); // Usually handled by stream completion
+            } else if (eventType !== 'message') { // Log unhandled named events
+                 console.warn(`[SSE Parser] Unhandled SSE event type '${eventType}' with data:`, parsedData);
+            }
+
+        } catch (e) {
+            console.error('[SSE Parser] Failed to parse SSE JSON data:', data, e);
+            if (cbs.onError) cbs.onError(`Failed to parse stream data: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    };
+    // --- End SSE Parser Helper ---
+
+
+    // --- Main Fetch Logic ---
     const fetchStream = async () => {
         try {
             const response = await fetch(`${API_BASE_URL}/ask-stream`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Accept': 'text/event-stream',
+                    'Accept': 'text/event-stream', // Important for SSE
                 },
-                body: JSON.stringify(payload),
-                signal: abortController.signal,
+                // Ensure payload structure matches backend expectation
+                body: JSON.stringify({
+                    ...payload,
+                    // Map history if needed, ensure correct format
+                    chat_history: payload.chat_history?.map(m => ({ sender: m.sender, text: m.text }))
+                }),
+                signal: abortController.signal, // Allow aborting the fetch request
             });
 
+            // Check for HTTP errors before attempting to read stream
             if (!response.ok) {
-                let errorDetail = `Request failed: ${response.status} ${response.statusText}`;
+                let errorDetail = `Stream request failed: ${response.status} ${response.statusText}`;
                 try {
                     const errorData = await response.json();
                     errorDetail = errorData.detail || errorData.error || errorDetail;
                 } catch (e) { /* Ignore if response isn't JSON */ }
                 console.error("Ask stream API error response:", { status: response.status, detail: errorDetail });
-                if (onError) onError(errorDetail);
-                if (onComplete) onComplete();
+                if (onError) onError(errorDetail); // Report HTTP error
+                if (onComplete) onComplete(); // Signal completion even on error
                 return;
             }
             if (!response.body) {
-                throw new Error('Response body is null');
+                throw new Error('Response body is unexpectedly null');
             }
 
-            // --- Revised Line-Based Parsing Logic --- 
+            // Setup for reading the stream
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            let buffer = ''; // Holds unprocessed data across reads
-            let currentEvent: string | null = null;
-            let currentData = '';
+            let buffer = ''; // Accumulates partial lines
+            let currentEvent: string | null = null; // Tracks 'event:' line
+            let currentData = ''; // Accumulates 'data:' lines for a single event
 
-            if (onOpen) onOpen();
+            if (onOpen) onOpen(); // Signal stream opened successfully
 
+            // Loop to continuously read chunks from the stream
             while (true) {
                 const { done, value } = await reader.read();
-                
-                // --- Log Raw Chunk --- 
+
                 if (value) {
-                    const rawChunk = decoder.decode(value, { stream: true });
-                    console.debug(`[SSE Parser] Raw chunk received (decoded): "${rawChunk.replace(/\n/g, '\\n')}"`);
-                    buffer += rawChunk; // Append new data chunk
-                } else if (!done) {
-                    console.debug("[SSE Parser] Received empty chunk value before done.");
-                }
-                // ---------------------
-
-                console.debug(`[SSE Parser] Buffer state: "${buffer.replace(/\n/g, '\\n')}"`);
-
-                if (done) {
-                    console.log("[SSE Parser] Stream reading finished (done).");
-                    // Process any final data left in the buffer
-                    if (currentData) { // Check if we have data from a final non-terminated message
-                        console.warn("[SSE Parser] Processing final data after stream closed.");
-                        parseAndHandleSSEData(currentEvent, currentData, callbacks);
-                    }
-                    break; // Exit loop
+                    const rawChunk = decoder.decode(value, { stream: true }); // Decode chunk
+                    buffer += rawChunk; // Append to buffer
                 }
 
-                // --- Renamed buffer variable to avoid conflict ---
-                let internalBuffer = buffer;
-                // -----------------------------------------------
-                
+                // Process complete lines (ending in '\n') from the buffer
                 let lineEndIndex;
-                // Process all complete lines (ending with \n) in the buffer
-                while ((lineEndIndex = internalBuffer.indexOf('\n')) >= 0) {
-                    const line = internalBuffer.substring(0, lineEndIndex).trim(); // Extract line, trim whitespace
-                    internalBuffer = internalBuffer.substring(lineEndIndex + 1); // Remove processed line (and \n) from buffer
+                while ((lineEndIndex = buffer.indexOf('\n')) >= 0) {
+                    const line = buffer.substring(0, lineEndIndex).trim(); // Extract line
+                    buffer = buffer.substring(lineEndIndex + 1); // Remove processed line from buffer
 
-                    console.debug(`[SSE Parser] Processing line: "${line}"`); // <<< Log Line
-
-                    if (line === '') {
-                        console.debug("[SSE Parser] Empty line found (message terminator)."); // <<< Log Terminator
-                        // Empty line: Dispatch the accumulated message
-                        if (currentData) {
+                    if (line === '') { // Empty line signifies end of an event message
+                        if (currentData) { // If we have accumulated data
                             parseAndHandleSSEData(currentEvent, currentData, callbacks);
                         }
-                        // Reset for next message
+                        // Reset for the next event message
                         currentEvent = null;
                         currentData = '';
                     } else if (line.startsWith('event:')) {
                         currentEvent = line.substring(6).trim();
                     } else if (line.startsWith('data:')) {
-                        // Append data, handling potential multi-line data fields
                         const dataContent = line.substring(5).trim();
+                        // Append data (handling multi-line data fields)
                         currentData = currentData ? `${currentData}\n${dataContent}` : dataContent;
-                    } else if (line.startsWith(':')) {
-                        // Ignore SSE comments
-                    } 
-                    // Ignore other lines (like id:)
+                    } // Ignore comment lines (starting with ':') or other non-standard lines
+                } // End while loop for processing lines in buffer
+
+                // If the stream is finished
+                if (done) {
+                    console.log("[SSE Parser] Stream reading finished (done signal).");
+                    // Process any final data remaining in the buffer (if stream ended mid-message)
+                    if (currentData) {
+                        console.warn("[SSE Parser] Processing final data after stream 'done'.");
+                        parseAndHandleSSEData(currentEvent, currentData, callbacks);
+                    }
+                    break; // Exit the main reading loop
                 }
-                 // Update the main buffer with any remaining unprocessed part
-                buffer = internalBuffer;
-                // Loop continues, buffer now contains only the potentially incomplete trailing part of the last chunk
-            }
+            } // End while(true) loop for reading stream
+
         } catch (error: any) {
+            // Handle errors during fetch/read
             if (error.name === 'AbortError') {
-                console.log('Stream fetch aborted by client.');
+                console.log('Stream fetch aborted by client.'); // Expected if user stops
             } else {
                 console.error('Error reading or fetching stream:', error);
-                if (onError) onError(`Stream connection error: ${error.message || error}`);
+                if (onError) onError(`Stream connection error: ${error.message || String(error)}`);
             }
         } finally {
-             console.log("[SSE Parser] Stream processing loop finished or errored.");
-             if (onComplete) onComplete();
+             console.log("[SSE Parser] Stream processing loop ended or encountered an error.");
+             if (onComplete) onComplete(); // Ensure onComplete is always called
         }
     };
+    // --- End Fetch Logic ---
 
-    // Helper function remains the same
-    const parseAndHandleSSEData = (event: string | null, data: string, cbs: StreamCallbacks) => {
-        const eventType = event || 'message';
-        try {
-            const parsedData: StreamEventData = JSON.parse(data);
-             console.debug(`[SSE Parser] Parsed data for event '${eventType}':`, parsedData);
-
-            if (eventType === 'token' && parsedData.token !== undefined && cbs.onToken) {
-                cbs.onToken(parsedData.token);
-            } else if (eventType === 'step' && parsedData.step && cbs.onStep) {
-                console.log("[SSE Parser] Identified 'step' event (Partial). Calling onStep with:", parsedData.step);
-                cbs.onStep(parsedData.step);
-            } else if (eventType === 'step_final' && parsedData.step && cbs.onStepFinal) {
-                console.log("[SSE Parser] Identified 'step_final' event (Full). Calling onStepFinal with:", parsedData.step);
-                console.log('[SSE Parser] Received step_final event data:', parsedData);
-                cbs.onStepFinal(parsedData.step);
-            } else if (eventType === 'error' && parsedData.error && cbs.onError) {
-                cbs.onError(parsedData.error);
-            } else if (eventType === 'end') {
-                console.log("[SSE Parser] Received 'end' event via data stream.");
-            } else if (eventType === 'message') {
-                 console.warn("[SSE Parser] Received unnamed 'message' event:", parsedData);
-             }
-        } catch (e) {
-            console.error('[SSE Parser] Failed to parse SSE JSON data:', data, e);
-            if (cbs.onError) cbs.onError(`Failed to parse stream data: ${e}`);
-        }
-    };
-
-    fetchStream();
-    return abortController;
+    fetchStream(); // Start the process
+    return abortController; // Return controller to allow cancellation
 };

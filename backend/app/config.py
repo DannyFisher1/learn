@@ -123,3 +123,11 @@ def update_active_provider(new_provider: Literal['ollama', 'openai']):
 # --- Chroma Mode Configuration ---
 # Set CHROMA_USE_HTTP to 'true' in your .env to use Chroma HTTP client mode (default: true)
 CHROMA_USE_HTTP = os.getenv("CHROMA_USE_HTTP", "true").lower() == "true"
+
+# --- Reddit Configuration ---
+REDDIT_ENABLED = os.getenv("REDDIT_ENABLED", "false").lower() == "true"
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
+
+

@@ -8,21 +8,33 @@ import {
     AskPayload,
     StreamCallbacks,
     askQuestionStream,
-    DocumentInfo // Import DocumentInfo type
-} from '@/lib/api'; // Ensure API functions and types are imported
+    DocumentInfo,
+    RagContextDocument,
+    AgentAction // Import type
+} from '@/lib/api';
 
 // Import Components
 import ThemeToggle from '@/components/ui/ThemeToggle';
 import ModelSelector from '@/components/common/ModelSelector';
 import { UploadDropdownRef } from '@/components/common/UploadDropdown';
 import UploadDropdown from '@/components/common/UploadDropdown';
-import CollapsibleSidebar from '@/components/layout/CollapsibleSidebar'; // Import new layout component
-import IntegratedInput from '@/components/chat/IntegratedInput'; // Import new input component
-import ChatMessages from '@/components/chat/ChatMessages'; // Import the actual ChatMessages
-import StepsDisplay from '@/components/chat/StepsDisplay'; // Import the StepsDisplay component
+import CollapsibleSidebar from '@/components/layout/CollapsibleSidebar';
+import IntegratedInput from '@/components/chat/IntegratedInput';
+import ChatMessages from '@/components/chat/ChatMessages';
+import StepsDisplay from '@/components/chat/StepsDisplay'; // Displays raw steps
+import RagContextDisplay from '@/components/chat/RagContextDisplay'; // Displays RAG context
+import ObservationDisplay from '@/components/chat/ObservationDisplay'; // Displays formatted observations
+
+// Import Icons
+import { Info, Terminal } from 'lucide-react';
 
 // Constants
 const ALL_DOCUMENTS_VALUE = 'all';
+
+// --- Helper Type Guard ---
+function isAgentAction(action: any): action is AgentAction {
+    return typeof action === 'object' && action !== null && 'tool' in action && 'tool_input' in action;
+}
 
 // --- Main Page Component ---
 export default function Home() {
@@ -31,19 +43,23 @@ export default function Home() {
     const [input, setInput] = useState('');
     const [isAsking, setIsAsking] = useState(false);
     const [askError, setAskError] = useState<string | null>(null);
-    const [currentAIMessageId, setCurrentAIMessageId] = useState<string | null>(null);
+    const [currentAIMessageId, setCurrentAIMessageId] = useState<string | null>(null); // Still useful for tracking stream target
     const streamAbortController = useRef<AbortController | null>(null);
 
     // --- Document Scope & Management State ---
     const [selectedFilenames, setSelectedFilenames] = useState<Set<string>>(new Set());
-    const [selectedTag, setSelectedTag] = useState<string | null>(null); // Keep for potential future tag filtering in sidebar
+    const [selectedTag, setSelectedTag] = useState<string | null>(null);
     const [refreshDocListTrigger, setRefreshDocListTrigger] = useState(0);
     const uploadDropdownRef = useRef<UploadDropdownRef>(null);
 
-    // --- UI Layout State ---
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true); // Sidebar starts open
-    const [activeContextSteps, setActiveContextSteps] = useState<IntermediateStep[] | null>(null);
-    const [activeContextMessageId, setActiveContextMessageId] = useState<string | null>(null);
+    // --- UI Layout & Context State ---
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    // --- State for Right Pane Content ---
+    const [activeContextSteps, setActiveContextSteps] = useState<IntermediateStep[] | null>(null); // Holds raw steps
+    const [activeRagContext, setActiveRagContext] = useState<RagContextDocument[] | null>(null); // Holds RAG snippets
+    const [activeObservationData, setActiveObservationData] = useState<any | null>(null); // Holds structured observation
+    const [activeObservationTool, setActiveObservationTool] = useState<string | null>(null); // Holds the tool name for observation
+    // --- Removed activeContextMessageId ---
 
     // --- Document Management Callbacks ---
     const triggerDocListRefresh = useCallback(() => {
@@ -51,49 +67,21 @@ export default function Home() {
         console.log("Document list refresh triggered from page.");
     }, []);
 
-    // --- Scope Selection Callbacks (Passed to Sidebar) ---
+    // --- Scope Selection Callbacks ---
     const handleFilenameSelectionToggle = useCallback((filename: string | null) => {
-        if (filename === null) {
-            setSelectedFilenames(new Set()); // Clear selection for "All Documents"
-            return;
-        }
+        if (filename === null) { setSelectedFilenames(new Set()); return; }
         setSelectedFilenames(prev => {
             const newSet = new Set(prev);
-            if (newSet.has(filename)) {
-                newSet.delete(filename);
-            } else {
-                // Maybe implement single-select logic if desired?
-                // For multi-select:
-                newSet.add(filename);
-            }
+            if (newSet.has(filename)) { newSet.delete(filename); } else { newSet.add(filename); }
             console.log("Selected filenames changed:", newSet);
             return newSet;
         });
     }, []);
 
     // --- UI Callbacks ---
-    const toggleSidebar = useCallback(() => {
-        setIsSidebarOpen(prev => !prev);
-    }, []);
+    const toggleSidebar = useCallback(() => { setIsSidebarOpen(prev => !prev); }, []);
 
-    const showStepsForMessage = useCallback((messageId: string | null) => {
-        if (messageId === null || messageId === activeContextMessageId) { // Allow toggling off
-            setActiveContextMessageId(null);
-            setActiveContextSteps(null);
-            return;
-        }
-        const targetMsg = messages.find(m => m.id === messageId);
-        // Only show context for AI messages that actually have steps
-        if (targetMsg && targetMsg.sender === 'ai' && targetMsg.intermediate_steps && targetMsg.intermediate_steps.length > 0) {
-            setActiveContextMessageId(messageId);
-            setActiveContextSteps(targetMsg.intermediate_steps);
-            console.log(`Showing context/steps for message ${messageId}`);
-        } else {
-            // Clear context if clicking a user message or AI message without steps
-             setActiveContextMessageId(null);
-             setActiveContextSteps(null);
-        }
-    }, [messages, activeContextMessageId]); // Dependencies
+    // --- Removed showContextForMessage callback ---
 
     // --- Chat Logic Callbacks ---
     const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement> | string) => {
@@ -102,47 +90,44 @@ export default function Home() {
 
     const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault(); // Prevent newline
-            handleSubmit(); // Trigger submit logic
+            event.preventDefault();
+            handleSubmit();
         }
     };
 
+    // --- Updated stopStreaming to clear all context displays ---
     const stopStreaming = useCallback(() => {
         if (streamAbortController.current) {
-            console.log("[Page] stopStreaming: Aborting stream controller.");
-            streamAbortController.current.abort();
-            streamAbortController.current = null;
-        } else {
-            console.log("[Page] stopStreaming: No active stream controller to abort.");
-        }
+            streamAbortController.current.abort(); streamAbortController.current = null;
+            console.log("[Page] Stream aborted.");
+        } else { console.log("[Page] No active stream to abort."); }
         setIsAsking(false);
         setCurrentAIMessageId(null);
-        // Decide whether to clear context pane on stop - perhaps keep steps visible?
-        // showStepsForMessage(null);
-    }, [/* showStepsForMessage? */]); // Add dependencies if needed
+        setActiveRagContext(null);
+        setActiveObservationData(null);
+        setActiveObservationTool(null);
+        setActiveContextSteps(null); // Also clear raw steps display on stop
+    }, []);
 
+    // --- Updated handleSubmit for Automatic Context Display ---
     const handleSubmit = useCallback(async (event?: React.FormEvent | string) => {
         let query = '';
-        if (typeof event === 'string') {
-            query = event;
-        } else {
-            if (event) event.preventDefault();
-            query = input;
-        }
-
+        if (typeof event === 'string') { query = event; }
+        else { if (event) event.preventDefault(); query = input; }
         if (isAsking) { stopStreaming(); return; }
         if (!query.trim()) return;
 
         const userMessageId = `user-${Date.now()}`;
         const aiMessageId = `ai-${Date.now()}`;
+        console.log(`[Page] handleSubmit: UserMsg=${userMessageId}, AIMsg=${aiMessageId}`);
 
-        console.log(`[Page] handleSubmit: Starting request. UserMsgID: ${userMessageId}, AIMsgID: ${aiMessageId}`);
-
-        setInput('');
-        setIsAsking(true);
-        setAskError(null);
+        setInput(''); setIsAsking(true); setAskError(null);
         setCurrentAIMessageId(aiMessageId);
-        showStepsForMessage(aiMessageId); // Activate context pane for the new AI message
+        // Clear all right-pane displays immediately
+        setActiveContextSteps(null);
+        setActiveRagContext(null);
+        setActiveObservationData(null);
+        setActiveObservationTool(null);
 
         const newUserMessage: ApiMessage = { id: userMessageId, sender: 'user', text: query };
         const newAiMessagePlaceholder: ApiMessage = { id: aiMessageId, sender: 'ai', text: '', intermediate_steps: [] };
@@ -151,120 +136,146 @@ export default function Home() {
         try {
             const filenamesArray = Array.from(selectedFilenames);
             const historyToSend = messages.map(m => ({ sender: m.sender, text: m.text }));
+            const payload: AskPayload = { question: query, filenames: filenamesArray.length > 0 ? filenamesArray : undefined, tag_filter: selectedTag === ALL_DOCUMENTS_VALUE ? undefined : selectedTag, chat_history: historyToSend.length > 0 ? historyToSend : undefined };
+            console.log("[Page] Sending payload:", payload);
 
-            const payload: AskPayload = {
-                question: query,
-                filenames: filenamesArray.length > 0 ? filenamesArray : undefined,
-                tag_filter: selectedTag === ALL_DOCUMENTS_VALUE ? undefined : selectedTag,
-                chat_history: historyToSend.length > 0 ? historyToSend : undefined,
-            };
-            console.log("[Page] handleSubmit: Sending payload:", payload);
-
+            // --- Define Stream Callbacks for Automatic Context Display ---
             const callbacks: StreamCallbacks = {
-                onOpen: () => console.log(`[Page] Stream opened for AIMsgID: ${aiMessageId}.`),
-                onToken: (token) => {
-                    setMessages(prev => prev.map(msg =>
-                        msg.id === aiMessageId ? { ...msg, text: msg.text + token } : msg
-                    ));
-                },
-                onStep: (step) => {
-                    console.log("[Page] onStep:", JSON.stringify(step));
-                    const stepToAdd = (typeof step.action === 'object' && step.action !== null && 'tool' in step.action)
-                        ? { ...step, observation: '⏳ Processing...' }
-                        : step;
+                onOpen: () => console.log(`[Page] Stream opened: ${aiMessageId}`),
 
+                onToken: (token) => {
+                    // Clear RAG/Observation when final answer starts streaming
+                    setActiveRagContext(null);
+                    setActiveObservationData(null);
+                    setActiveObservationTool(null);
+                    // Leave Steps potentially visible if they arrived before tokens
+                    // setActiveContextSteps(null); // Optional: clear steps too
+                    setMessages(prev => prev.map(msg => msg.id === aiMessageId ? { ...msg, text: msg.text + token } : msg));
+                },
+
+                onRagContext: (contextDocs) => {
+                    console.log(`[Page] RAG Context received (${contextDocs.length} docs)`);
+                    // Display RAG context, clear others
+                    setActiveContextSteps(null);
+                    setActiveObservationData(null);
+                    setActiveObservationTool(null);
+                    setActiveRagContext(contextDocs);
+                },
+
+                onStep: (step) => {
+                    console.log("[Page] onStep (Partial):", step.action);
+                    // Display raw steps, clear others
+                    setActiveRagContext(null);
+                    setActiveObservationData(null);
+                    setActiveObservationTool(null);
+                    const stepToAdd = isAgentAction(step.action) ? { ...step, observation: '⏳ Processing...' } : step;
+                    // Add step to message state AND display raw steps
                     setMessages(prev => {
                         const msgIndex = prev.findIndex(m => m.id === aiMessageId);
                         if (msgIndex === -1) return prev;
                         const targetMsg = prev[msgIndex];
                         const updatedSteps = [...(targetMsg.intermediate_steps || []), stepToAdd];
                         const updatedMsg = { ...targetMsg, intermediate_steps: updatedSteps };
-                        if (activeContextMessageId === aiMessageId) setActiveContextSteps(updatedSteps);
-                        const newMessages = [...prev];
-                        newMessages[msgIndex] = updatedMsg;
+                        setActiveContextSteps(updatedSteps); // Update right pane with steps
+                        const newMessages = [...prev]; newMessages[msgIndex] = updatedMsg;
                         return newMessages;
                     });
                 },
+
                 onStepFinal: (finalStep) => {
-                    console.log(`[Page] onStepFinal:`, JSON.stringify(finalStep));
-                     setMessages(prev => {
+                    console.log("[Page] onStepFinal:", finalStep.action);
+                    setActiveRagContext(null); // Clear RAG display
+
+                    let toolName: string | null = null;
+                    if (isAgentAction(finalStep.action)) {
+                        toolName = finalStep.action.tool ?? null;
+                    }
+                    const observation = finalStep.observation;
+
+                    // Update message state first (replace partial step)
+                    setMessages(prev => {
                         const msgIndex = prev.findIndex(m => m.id === aiMessageId);
                         if (msgIndex === -1) return prev;
                         const targetMsg = prev[msgIndex];
                         const existingSteps = targetMsg.intermediate_steps || [];
-
-                        let partialStepIndex = -1;
-                        if (typeof finalStep.action === 'object' && finalStep.action !== null && 'tool' in finalStep.action) {
-                            const finalAction = finalStep.action;
-                            partialStepIndex = existingSteps.findIndex(s =>
-                                s.observation === "⏳ Processing..." &&
-                                typeof s.action === 'object' && s.action !== null && 'tool' in s.action &&
-                                s.action.tool === finalAction.tool &&
-                                JSON.stringify(s.action.tool_input) === JSON.stringify(finalAction.tool_input)
-                            );
-                        }
-
+                        const partialStepIndex = existingSteps.findIndex(s => s.observation === "⏳ Processing..." && isAgentAction(s.action) && isAgentAction(finalStep.action) && s.action.tool === finalStep.action.tool && JSON.stringify(s.action.tool_input) === JSON.stringify(finalStep.action.tool_input));
                         let newStepsArray;
-                        if (partialStepIndex !== -1) {
-                            newStepsArray = [...existingSteps];
-                            newStepsArray[partialStepIndex] = finalStep;
-                            console.log(`[Page] Replacing partial step at index ${partialStepIndex}.`);
-                        } else {
-                            console.warn(`[Page] Partial step not found for final step. Appending.`);
-                            const alreadyExists = existingSteps.some(s => JSON.stringify(s) === JSON.stringify(finalStep));
-                            newStepsArray = alreadyExists ? existingSteps : [...existingSteps, finalStep];
-                        }
-
+                        if (partialStepIndex !== -1) { newStepsArray = [...existingSteps]; newStepsArray[partialStepIndex] = finalStep; }
+                        else { const alreadyExists = existingSteps.some(s => JSON.stringify(s) === JSON.stringify(finalStep)); newStepsArray = alreadyExists ? existingSteps : [...existingSteps, finalStep]; }
                         const updatedMsg = { ...targetMsg, intermediate_steps: newStepsArray };
-                        if (activeContextMessageId === aiMessageId) setActiveContextSteps(newStepsArray);
-                        const newMessages = [...prev];
-                        newMessages[msgIndex] = updatedMsg;
+                        const newMessages = [...prev]; newMessages[msgIndex] = updatedMsg;
                         return newMessages;
                     });
+
+                    // Now update the context pane display based on the final observation
+                    if (observation && observation !== '⏳ Processing...' && (Array.isArray(observation) || (typeof observation === 'object' && observation !== null))) {
+                        console.log(`[Page] Displaying formatted Observation for tool: ${toolName}`);
+                        setActiveObservationData(observation); // Show formatted observation
+                        setActiveObservationTool(toolName);
+                        setActiveContextSteps(null); // Hide raw steps when showing observation
+                    } else {
+                        // If observation is simple/missing, ensure observation display is clear
+                        // and potentially show the final raw steps list
+                        console.log("[Page] Observation is simple/missing, clearing observation display (steps might show).");
+                        setActiveObservationData(null);
+                        setActiveObservationTool(null);
+                        // Find updated steps array from state (needed because setMessages is async)
+                        const finalStepsForDisplay = messages.find(m => m.id === aiMessageId)?.intermediate_steps;
+                        setActiveContextSteps(finalStepsForDisplay || [finalStep]); // Show final steps
+                    }
                 },
+
                 onError: (error) => {
                     const errorMsg = typeof error === 'string' ? error : (error as any)?.message || "Streaming error.";
-                    console.error(`[Page] Stream error for AIMsgID: ${aiMessageId}:`, errorMsg);
+                    console.error(`[Page] Stream error:`, errorMsg);
                     setAskError(errorMsg);
-                    setMessages(prev => prev.map(msg =>
-                        msg.id === aiMessageId ? { ...msg, text: (msg.text || '') + `\n\n**Error:** ${errorMsg}` } : msg
-                    ));
-                    stopStreaming();
-                },
+                    setMessages(prev => prev.map(msg => msg.id === aiMessageId ? { ...msg, text: (msg.text || '') + `\n\n**Error:** ${errorMsg}` } : msg));
+                    stopStreaming(); // Clears all context displays
+                 },
+
                 onComplete: () => {
-                    console.log(`[Page] Stream completed for AIMsgID: ${aiMessageId}.`);
+                    console.log(`[Page] Stream completed: ${aiMessageId}.`);
                     setIsAsking(false);
                     setCurrentAIMessageId(null);
                     streamAbortController.current = null;
-                },
-            };
+                    // Clear temporary displays on completion
+                    setActiveRagContext(null);
+                    setActiveObservationData(null);
+                    setActiveObservationTool(null);
+                    // Decide if final steps should remain visible
+                    // setActiveContextSteps(null);
+                 },
+            }; // End callbacks
 
             streamAbortController.current = askQuestionStream(payload, callbacks);
 
-        } catch (error: any) {
-            console.error("[Page] handleSubmit: Error setting up stream:", error);
-            setAskError(error.message || "Failed to start connection.");
-            setMessages(prev => prev.filter(msg => msg.id !== aiMessageId && msg.id !== userMessageId));
-            setInput(query);
-            setIsAsking(false);
-            setCurrentAIMessageId(null);
-            showStepsForMessage(null);
-            if (streamAbortController.current) { streamAbortController.current = null; }
-        }
-    }, [input, isAsking, selectedFilenames, selectedTag, messages, stopStreaming, showStepsForMessage, activeContextMessageId]);
+        } catch (error: any) { // Catch errors setting up the stream
+             console.error("[Page] Error setting up stream:", error);
+             setAskError(error.message || "Failed to start connection.");
+             setMessages(prev => prev.filter(msg => msg.id !== aiMessageId && msg.id !== userMessageId));
+             setInput(query); setIsAsking(false); setCurrentAIMessageId(null);
+             // Clear all context displays on setup error
+             setActiveContextSteps(null); setActiveRagContext(null); setActiveObservationData(null); setActiveObservationTool(null);
+             if (streamAbortController.current) { streamAbortController.current = null; }
+         }
+    }, [
+        // Dependencies
+        input, isAsking, selectedFilenames, selectedTag, messages, // Include messages for history
+        stopStreaming // Include stopStreaming
+        // Removed showContextForMessage and activeContextMessageId
+    ]);
 
 
     // Helper to Get Scope Text for Display
     const getScopeText = (): string => {
         const filenamesArray = Array.from(selectedFilenames);
-        const hasFiles = filenamesArray.length > 0;
-        if (!hasFiles) return "All Documents";
+        if (filenamesArray.length === 0) return "All Documents";
         if (filenamesArray.length === 1) return `File: ${filenamesArray[0]}`;
         return `${filenamesArray.length} Files Selected`;
     };
 
 
-    // --- Render the New Layout ---
+    // --- Render the Layout ---
     return (
         <div className="flex flex-col h-screen max-h-screen bg-background text-foreground overflow-hidden">
 
@@ -276,13 +287,8 @@ export default function Home() {
 
             {/* Top Bar */}
             <header className="h-14 flex-shrink-0 border-b flex items-center justify-between px-4">
-                <div>
-                    <span className="font-bold text-lg">N</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <ModelSelector />
-                    <ThemeToggle />
-                </div>
+                <div><span className="font-bold text-lg">N</span></div>
+                <div className="flex items-center gap-2"><ModelSelector /><ThemeToggle /></div>
             </header>
 
             {/* Main Content Area */}
@@ -300,36 +306,53 @@ export default function Home() {
                  />
 
                  {/* Center Interaction Pane */}
-                 <section className="flex-grow flex flex-col overflow-hidden border-r"> {/* Added border */}
-                    {/* Use the actual ChatMessages component */}
+                 <section className="flex-grow flex flex-col overflow-hidden border-r">
+                    {/* Chat Messages now doesn't need context props */}
                     <ChatMessages
                         messages={messages}
                         isAsking={isAsking}
                         currentAIMessageId={currentAIMessageId}
-                        activeContextMessageId={activeContextMessageId}
-                        onShowContext={showStepsForMessage}
+                        // removed activeContextMessageId
+                        // removed onShowContext
                     />
-
-                     {/* Integrated Input Area Component */}
                     <IntegratedInput
                         input={input}
                         handleInputChange={handleInputChange}
                         handleSubmit={handleSubmit}
-                        handleKeyDown={handleKeyDown} // Pass the keydown handler
+                        handleKeyDown={handleKeyDown}
                         stopStreaming={stopStreaming}
                         isAsking={isAsking}
                         askError={askError}
                         scopeText={getScopeText()}
-                        onToggleSidebar={toggleSidebar} // Pass sidebar toggle
+                        onToggleSidebar={toggleSidebar}
                     />
                  </section>
 
-                 {/* Right Context Pane */}
-                 <div className="w-80 flex-shrink-0 bg-card overflow-y-auto"> {/* // Structure for ContextPane */}
-                     {/* Use the actual StepsDisplay component */}
-                     <StepsDisplay steps={activeContextSteps} />
-                 </div>
-
+                 {/* Right Context Pane - UPDATED Conditional Rendering for Automatic Display */}
+                 <aside className="w-80 flex-shrink-0 bg-card overflow-y-auto border-l">
+                    {/* Priority: RAG Context > Formatted Observation > Raw Steps > Placeholder */}
+                    {activeRagContext ? (
+                        <RagContextDisplay contextDocs={activeRagContext} />
+                    ) : activeObservationData ? (
+                        <ObservationDisplay
+                            observation={activeObservationData}
+                            toolName={activeObservationTool}
+                        />
+                    ) : activeContextSteps && activeContextSteps.length > 0 ? (
+                        // Fallback to raw steps display if no other context active
+                        <StepsDisplay steps={activeContextSteps} />
+                    ) : (
+                         // Default placeholder when no context/steps/observation active
+                         <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-6">
+                             <Info size={40} className="mb-4 opacity-40" />
+                             <p className="text-sm font-medium text-foreground/90">Context Pane</p>
+                             {/* Simplified message */}
+                             <p className="text-xs mt-2">Detailed context like agent steps,</p>
+                             <p className="text-xs mt-1">retrieved documents, or tool results</p>
+                             <p className="text-xs mt-1">will appear here automatically.</p>
+                         </div>
+                    )}
+                 </aside>
             </main>
         </div>
     );

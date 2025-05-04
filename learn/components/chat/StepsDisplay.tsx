@@ -6,12 +6,14 @@ import { IntermediateStep, AgentAction } from '@/lib/api'; // Import types
 import { cn } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area'; // For scrollable steps
-import { Bot, Terminal, Eye, BoxSelect, Info } from 'lucide-react'; // Use Lucide consistently
+import { ScrollArea } from "@/components/ui/scroll-area"; 
+import { Terminal, Eye, BoxSelect, Info } from 'lucide-react'; // Use Lucide consistently
 
-// Helper type guard (can be shared in a utils file if needed)
+// Helper type guard (keep for local use or move to shared utils)
 function isAgentAction(action: any): action is AgentAction {
+    // Basic check for expected keys
     return typeof action === 'object' && action !== null && 'tool' in action && 'tool_input' in action;
+    // Note: 'log' might not always be present depending on agent setup, so check is optional
 }
 
 interface StepsDisplayProps {
@@ -20,65 +22,80 @@ interface StepsDisplayProps {
 
 export default function StepsDisplay({ steps }: StepsDisplayProps) {
 
+    // Display placeholder/instructions if no steps are provided (or if RAG context is active)
     if (!steps || steps.length === 0) {
         return (
-            <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-4">
-                 <Info size={48} className="mb-4 opacity-50" />
-                 <p className="text-sm">Select an AI message <Terminal size={14} className="inline align-text-bottom mx-0.5" /> in the chat</p>
-                 <p className="text-sm mt-1">to view the detailed agent steps here.</p>
+            <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-6"> {/* Increased padding */}
+                 <Info size={40} className="mb-4 opacity-40" /> {/* Slightly smaller icon */}
+                 <p className="text-sm font-medium text-foreground/90">Context Pane</p>
+                 <p className="text-xs mt-1">Select an AI message <Terminal size={12} className="inline align-baseline mx-0.5" /> in the chat</p>
+                 <p className="text-xs mt-1">to view detailed agent steps, or</p>
+                 <p className="text-xs mt-1">see retrieved document context here during RAG queries.</p>
             </div>
         );
     }
 
+    // Render the list of steps if steps array is provided and not empty
     return (
-        <ScrollArea className="h-full"> {/* Make the whole area scrollable if steps overflow */}
-             <div className="space-y-4 p-1"> {/* Add some padding */}
+        // Use ScrollArea for the entire content if it overflows
+        <ScrollArea className="h-full w-full">
+             {/* Add padding to the container within the scroll area */}
+             <div className="space-y-3 p-4">
+                 <h3 className="text-sm font-semibold text-muted-foreground sticky top-0 bg-card pb-2 pt-0 border-b mb-2"> {/* Sticky header */}
+                    Agent Steps ({steps.length})
+                 </h3>
                  {steps.map((step, idx) => (
-                    <Card key={`step-${idx}`} className="bg-muted/50 shadow-sm">
-                         <CardHeader className="p-2 pb-1">
+                    // Card for each step for visual grouping
+                    <Card key={`step-${idx}`} className="bg-muted/50 shadow-sm overflow-hidden"> {/* Added overflow-hidden */}
+                         {/* Use CardHeader for step number, less padding */}
+                         <CardHeader className="p-2 pb-1 border-b bg-muted/70">
                             <CardTitle className="text-xs font-medium text-muted-foreground flex items-center">
-                                <Terminal size={12} className="mr-1.5" />
+                                <Terminal size={12} className="mr-1.5 flex-shrink-0" />
                                 Step {idx + 1}
                             </CardTitle>
                         </CardHeader>
-                        <CardContent className="p-2 pt-1 text-xs space-y-2">
-                             {/* Display Action (Tool Usage) */}
+                        {/* Use CardContent for action/observation details */}
+                        <CardContent className="p-2 text-xs space-y-2">
+                             {/* Action Block */}
                              {isAgentAction(step.action) ? (
-                                <div className="border-l-2 border-blue-400 pl-2 py-1">
-                                    <div className="flex items-center gap-1 font-medium text-foreground/90 mb-1">
-                                         <BoxSelect size={14} className="flex-shrink-0" /> Action: Use Tool
+                                <div className="border-l-2 border-blue-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
+                                    <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
+                                         <BoxSelect size={13} className="flex-shrink-0" /> Action: Use Tool
                                     </div>
-                                    <Badge variant="outline" className="my-0.5 text-[10px] h-auto py-0.5 px-1.5 bg-background">
+                                    <Badge variant="outline" className="text-[10px] font-mono h-auto py-0.5 px-1.5 bg-background shadow-sm">
                                         {step.action.tool || 'Unknown Tool'}
                                     </Badge>
-                                    <div className="mt-1 font-mono bg-background p-1.5 rounded text-muted-foreground text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
-                                         <span className="font-semibold text-foreground/70">Input:</span> {typeof step.action.tool_input === 'string'
+                                    {/* Input Block - use pre-wrap */}
+                                    <div className="mt-1 font-mono bg-background p-2 rounded text-muted-foreground text-[11px] overflow-x-auto whitespace-pre-wrap break-words border">
+                                         <span className="font-semibold text-foreground/75 block mb-0.5">Input:</span>
+                                         {typeof step.action.tool_input === 'string'
                                             ? step.action.tool_input
                                             : JSON.stringify(step.action.tool_input, null, 2)}
                                     </div>
                                 </div>
                              ) : (
-                                 // Render if action is just a string (less common now but fallback)
-                                  <p><span className="font-medium">Action:</span> {String(step.action)}</p>
+                                 // Fallback if action is not a standard AgentAction object
+                                 <div className="border-l-2 border-gray-400 pl-2.5 py-1">
+                                     <p><span className="font-semibold text-foreground/95">Action:</span> {String(step.action)}</p>
+                                 </div>
                              )}
 
-                            {/* Display Observation (Tool Result) */}
-                            <div className="border-l-2 border-green-400 pl-2 py-1">
-                                 <div className="flex items-center gap-1 font-medium text-foreground/90 mb-1">
-                                     <Eye size={14} className="flex-shrink-0" /> Observation:
+                            {/* Observation Block */}
+                            <div className="border-l-2 border-green-400 pl-2.5 py-1 space-y-1"> {/* Adjusted padding/spacing */}
+                                 <div className="flex items-center gap-1 font-semibold text-foreground/95"> {/* Increased contrast */}
+                                     <Eye size={13} className="flex-shrink-0" /> Observation:
                                  </div>
-                                 {/* Tool Output */}
-                                 <div className="mt-0.5 text-muted-foreground bg-background p-1.5 rounded text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
+                                 {/* Observation Content - use pre-wrap */}
+                                 <div className="mt-0.5 text-muted-foreground bg-background p-2 rounded text-[11px] overflow-x-auto whitespace-pre-wrap break-words border">
                                     {step.observation === '⏳ Processing...' ? (
                                         <span className="italic text-foreground/70">{step.observation}</span>
                                     ) : (
-                                        // Attempt to format JSON if observation is a string that looks like JSON
-                                        // Basic check - might need refinement
-                                        (typeof step.observation === 'string' && step.observation.trim().startsWith('{') && step.observation.trim().endsWith('}'))
-                                        ? (<pre><code>{JSON.stringify(JSON.parse(step.observation), null, 2)}</code></pre>)
-                                        : (typeof step.observation === 'object'
-                                           ? (<pre><code>{JSON.stringify(step.observation, null, 2)}</code></pre>)
-                                           : String(step.observation)) // Fallback to string
+                                         // Consistent formatting using pre/code for objects/JSON-like strings
+                                         (typeof step.observation === 'string' && step.observation.trim().startsWith('{') && step.observation.trim().endsWith('}'))
+                                         ? (<pre className="text-[11px]"><code>{JSON.stringify(JSON.parse(step.observation), null, 2)}</code></pre>)
+                                         : (typeof step.observation === 'object' && step.observation !== null
+                                            ? (<pre className="text-[11px]"><code>{JSON.stringify(step.observation, null, 2)}</code></pre>)
+                                            : String(step.observation)) // Render plain strings directly
                                     )
                                     }
                                  </div>
