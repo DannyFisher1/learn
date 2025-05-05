@@ -95,7 +95,6 @@ export default function MessageBlock({
 
     return (
         <div className={cn("flex flex-col w-full")}>
-            {/* --- User Query Display (Unchanged) --- */}
             {isUser && (
                 <div className="flex items-start gap-3 mb-3">
                     <div className="flex-shrink-0 w-7 h-7 rounded-full bg-accent text-accent-foreground items-center justify-center flex self-start">

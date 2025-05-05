@@ -3,82 +3,120 @@
 import logging
 from typing import Optional
 from pathlib import Path
+import os # <<< Added import for path joining
 
 # Langchain imports
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.prompts import PromptTemplate # Removed ChatPromptTemplate, SystemMessage
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.runnables import Runnable
-from langchain_core.messages import SystemMessage
 
 # App imports
 from app import config
-from app.core.ai.llm import _get_llm # Import LLM getter
+# --- Updated LLM import ---
+from app.core.ai.llm import get_llm, clear_llm_instance_cache # <<< Import new functions
+# --------------------------
 from app.utils import get_logger
 
 logger = get_logger(__name__)
 
-# --- Global for Caching the Chain ---
-_combine_docs_chain: Optional[Runnable] = None
+# --- Module-level Cache for the Chain ---
+_cached_combine_docs_chain: Optional[Runnable] = None
 
 # --- Setup Function for the Combine Docs Chain ---
 def setup_combine_docs_chain(force_reload_llm: bool = False):
     """
     Sets up the LLM and the chain that combines documents based on a template.
-    This is specifically used by the RAG tool.
+    This is specifically used by the RAG tool. Uses cached instance unless
+    LLM is force reloaded or chain is not yet created.
 
     Args:
-        force_reload_llm: If True, forces re-initialization of the underlying LLM.
-                          The chain itself is rebuilt if it doesn't exist or if LLM is reloaded.
+        force_reload_llm: If True, forces re-initialization of the underlying LLM
+                          (by clearing its cache) and forces this chain to be rebuilt.
     """
-    global _combine_docs_chain
-    llm_instance = _get_llm(force_reload=force_reload_llm)
+    global _cached_combine_docs_chain
 
-    if _combine_docs_chain is None or force_reload_llm:
-        logger.info(f"Setting up CombineDocsChain (Force Reload LLM: {force_reload_llm}).")
+    # --- Clear LLM cache first if forcing reload ---
+    if force_reload_llm:
+        logger.debug("CombineDocsChain setup: Force Reload requested, clearing LLM cache.")
+        clear_llm_instance_cache()
+        # Also clear this chain's cache
+        _cached_combine_docs_chain = None
+    # -----------------------------------------------
+
+    # --- Rebuild chain if needed ---
+    if _cached_combine_docs_chain is None:
+        logger.info(f"Setting up CombineDocsChain (LLM Forced Reload: {force_reload_llm}, Chain Cache Empty: {_cached_combine_docs_chain is None}).")
+
         try:
-            template_path = Path("prompts/rag_agent.txt")
-            if not template_path.is_file():
+            # --- Get LLM instance (uses new getter, potentially cached) ---
+            logger.debug("Getting LLM instance for CombineDocsChain...")
+            llm_instance = get_llm()
+            logger.debug("LLM instance obtained for CombineDocsChain.")
+            # ------------------------------------------------------------
+
+            # --- Load Prompt Template ---
+            # Use BASE_DIR from config for reliable path
+            template_filename = "rag_agent.txt"
+            template_path = os.path.join(config.BASE_DIR, "prompts", template_filename)
+            logger.debug(f"Loading RAG prompt from: {template_path}")
+
+            if not os.path.isfile(template_path): # Use os.path.isfile for consistency
                 logger.error(f"RAG Prompt template file not found at: {template_path}")
                 raise FileNotFoundError(f"Prompt file not found: {template_path}")
 
-            template_string = template_path.read_text(encoding='utf-8')
+            with open(template_path, 'r', encoding='utf-8') as f:
+                 template_string = f.read()
 
-            # --- Pre-process the template string to escape literal braces --- 
-            template_string = template_path.read_text(encoding='utf-8')
-            safe_template_string = (
-                template_string
-                .replace("{", "{{")
-                .replace("}", "}}")
-                .replace("{{context}}", "{context}")
-                .replace("{{input}}", "{input}")
-            )
-            # -------------------------------------------------------------
-            # print("TEMPLATE STRING:\n", safe_template_string)
+            # Pre-processing template_string removed as PromptTemplate handles it well usually.
+            # If you encounter issues with complex prompts, re-introduce specific replacements.
+            # safe_template_string = (
+            #     template_string
+            #     .replace("{", "{{")
+            #     .replace("}", "}}")
+            #     .replace("{{context}}", "{context}")
+            #     .replace("{{input}}", "{input}")
+            # )
+            # logger.debug("RAG prompt loaded and processed.")
 
-            # --- Use PromptTemplate with explicit variables AND pre-processed string ---
-            prompt = PromptTemplate(
-                template=safe_template_string,
-                input_variables=["context", "input"] 
-            )
-            # -----------------------------------------------------------------------
+            # --- Create PromptTemplate ---
+            # Ensure your rag_agent.txt uses exactly "{context}" and "{input}"
+            prompt = PromptTemplate.from_template(template_string)
+            # ---------------------------
 
-            # Pass the PromptTemplate directly to the chain
-            _combine_docs_chain = create_stuff_documents_chain(llm_instance, prompt)
-            logger.info("CombineDocsChain setup complete.")
+            # --- Create and Cache the Chain ---
+            chain_instance = create_stuff_documents_chain(llm_instance, prompt)
+            _cached_combine_docs_chain = chain_instance # Cache the new instance
+            logger.info("CombineDocsChain setup complete and cached.")
+            # --------------------------------
 
         except Exception as e:
             logger.error(f"Error setting up CombineDocs chain: {e}", exc_info=True)
-            _combine_docs_chain = None # Reset on failure
-            raise RuntimeError(f"Failed to setup CombineDocsChain: {e}") # Raise error
+            _cached_combine_docs_chain = None # Reset cache on failure
+            raise RuntimeError(f"Failed to setup CombineDocsChain: {e}") from e
+    else:
+         logger.debug("Using cached CombineDocsChain instance.")
 
-# Function to get the chain, ensuring it's set up
+
+# --- Function to get the chain, ensuring it's set up ---
 def get_combine_docs_chain() -> Runnable:
-    """Returns the combine docs chain, setting it up if necessary."""
-    if _combine_docs_chain is None:
-        logger.warning("CombineDocsChain accessed before explicit setup. Setting up now.")
-        setup_combine_docs_chain() # Use default (no force reload)
+    """
+    Returns the combine docs chain, setting it up if necessary (without forcing reload).
+    """
+    global _cached_combine_docs_chain
+    if _cached_combine_docs_chain is None:
+        logger.warning("CombineDocsChain accessed before explicit setup or after cache clear. Setting up now.")
+        # Call setup without forcing LLM reload by default when accessed lazily
+        setup_combine_docs_chain(force_reload_llm=False)
 
-    if _combine_docs_chain is None: # Check again after setup attempt
+    # Check again after setup attempt
+    if _cached_combine_docs_chain is None:
+         logger.critical("CombineDocsChain is None after setup attempt!")
          raise RuntimeError("CombineDocsChain could not be initialized.")
 
-    return _combine_docs_chain
+    return _cached_combine_docs_chain
+
+def clear_combine_docs_chain_cache():
+    """Clears the cached combine docs chain instance."""
+    global _cached_combine_docs_chain
+    logger.info("Clearing cached CombineDocsChain instance.")
+    _cached_combine_docs_chain = None

@@ -1,10 +1,9 @@
 # app/services/document_service.py
 
 import logging
+import asyncio # <<< Added import
 from pathlib import Path
-# --- Added Optional ---
 from typing import List, Dict, Union, Any, Optional
-# ---------------------
 
 # App imports
 from app.core.processing import document_processor # Handles loading/splitting
@@ -13,13 +12,14 @@ from app.utils import get_logger
 
 logger = get_logger(__name__)
 
-# --- Updated handle_upload to call renamed processor ---
+# --- Updated handle_upload to call processor and add docs asynchronously ---
 async def handle_upload(temp_file_path: Union[str, Path], original_filename: str, tag: Optional[str] = None) -> Dict[str, Any]:
     """
     Orchestrates the processing and storage of an uploaded document, including its tag.
+    Runs blocking operations (processing, vector store add) in separate threads.
 
-    1. Processes the document using document_processor, passing the tag.
-    2. If chunks are successfully created, adds them to the vector store.
+    1. Processes the document using document_processor asynchronously.
+    2. If chunks are successfully created, adds them to the vector store asynchronously.
 
     Args:
         temp_file_path: Path to the temporarily saved uploaded file.
@@ -34,10 +34,13 @@ async def handle_upload(temp_file_path: Union[str, Path], original_filename: str
     message = "Upload handling started."
 
     try:
-        logger.info(f"Calling document processor for {original_filename} with tag '{tag}'...")
-        # --- Call renamed processor --- 
-        chunks = document_processor.process_document_to_chunks(temp_file_path, original_filename, tag=tag)
-        # ----------------------------
+        logger.info(f"Calling document processor asynchronously for {original_filename} with tag '{tag}'...")
+        # --- Call processor asynchronously ---
+        chunks = await asyncio.to_thread(
+            document_processor.process_document_to_chunks,
+            temp_file_path, original_filename, tag=tag
+        )
+        # -----------------------------------
 
         if not chunks:
             message = f"Processing failed or yielded no text content for '{original_filename}'. Document not added."
@@ -46,9 +49,10 @@ async def handle_upload(temp_file_path: Union[str, Path], original_filename: str
 
         logger.info(f"Successfully processed '{original_filename}' into {len(chunks)} chunks with tag '{tag}'.")
 
-        # --- Add Chunks to Vector Store (metadata now includes file_type) ---
-        logger.info(f"Adding {len(chunks)} chunks for '{original_filename}' to vector store...")
-        vector_store.add_documents_to_vectorstore(chunks)
+        # --- Add Chunks to Vector Store asynchronously ---
+        logger.info(f"Adding {len(chunks)} chunks for '{original_filename}' to vector store asynchronously...")
+        # Assuming add_documents_to_vectorstore might block
+        await asyncio.to_thread(vector_store.add_documents_to_vectorstore, chunks)
         logger.info(f"Chunks for '{original_filename}' added to vector store.")
 
         processed_successfully = True
@@ -58,6 +62,7 @@ async def handle_upload(temp_file_path: Union[str, Path], original_filename: str
         message = f"Temporary file not found at {temp_file_path}. Upload failed."
         logger.error(message)
         processed_successfully = False
+    # Note: asyncio.to_thread might raise the original exception if the thread function fails
     except RuntimeError as rte:
          message = f"A runtime error occurred during processing or storage of '{original_filename}': {rte}"
          logger.error(message, exc_info=False)
@@ -69,21 +74,22 @@ async def handle_upload(temp_file_path: Union[str, Path], original_filename: str
 
     return {"success": processed_successfully, "message": message, "filename": original_filename}
 
-# --- Updated list_documents_service to return file_type ---
-def list_documents_service() -> List[Dict[str, Optional[str]]]:
+# --- Changed list_documents_service to async and wrap vector store call ---
+async def list_documents_service() -> List[Dict[str, Optional[str]]]:
     """
-    Retrieves the list of unique indexed documents, including their filenames, tags, and file types.
+    Retrieves the list of unique indexed documents asynchronously, including their filenames, tags, and file types.
 
     Returns:
         A list of dictionaries, containing 'filename', 'tag', and 'file_type'.
         Example: [{'filename': 'a.pdf', 'tag': 'hw', 'file_type': 'pdf'}, ...]
     """
-    logger.info("Service retrieving list of indexed documents with tags and file types.")
+    logger.info("Service retrieving list of indexed documents with tags and file types asynchronously.")
     document_details: List[Dict[str, Optional[str]]] = []
     try:
-        all_metadata = vector_store.list_indexed_sources_with_metadata()
+        # Assuming list_indexed_sources_with_metadata might block
+        all_metadata = await asyncio.to_thread(vector_store.list_indexed_sources_with_metadata)
 
-        # Process metadata to get unique filename/tag/file_type combinations
+        # Process metadata (this part is usually fast and okay to keep sync)
         unique_docs: Dict[str, Dict[str, Optional[str]]] = {}
         for meta in all_metadata:
              filename = meta.get("source_file")
@@ -116,23 +122,19 @@ def list_documents_service() -> List[Dict[str, Optional[str]]]:
         logger.error(f"Error retrieving or processing document list from vector store: {e}", exc_info=True)
         return []
 
-# --- Modification Required in vector_store.py ---
-# We need a new function `list_indexed_sources_with_metadata` in `app/core/components/vector_store.py`
-# that returns the full list of metadata dictionaries instead of just unique filenames.
-# The old `list_indexed_sources` can be kept or removed.
 
-# --- delete_document_service remains unchanged ---
-def delete_document_service(filename: str) -> bool:
+# --- Changed delete_document_service to async and wrap vector store call ---
+async def delete_document_service(filename: str) -> bool:
     """
-    Requests the deletion of all document chunks associated with a given source filename.
-    (No change needed here for tagging).
+    Requests the deletion of all document chunks associated with a given source filename asynchronously.
     """
-    logger.info(f"Service requesting deletion of document: '{filename}'")
+    logger.info(f"Service requesting deletion of document: '{filename}' asynchronously.")
     if not filename:
         logger.warning("Delete request received with empty filename.")
         return False
     try:
-        success = vector_store.delete_documents_by_source(filename)
+        # Assuming delete_documents_by_source might block
+        success = await asyncio.to_thread(vector_store.delete_documents_by_source, filename)
         if success:
              logger.info(f"Deletion request for '{filename}' processed by vector store (Success={success}).")
         else:

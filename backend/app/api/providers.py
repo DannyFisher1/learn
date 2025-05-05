@@ -17,7 +17,7 @@ async def get_provider_status_endpoint():
     """
     Returns the currently active AI provider.
     """
-    # Reads directly from config as status check is simple
+    # Reads directly from config as status check is simple - remains sync
     active_provider = config.ACTIVE_AI_PROVIDER
     logger.info(f"Reporting current provider status: {active_provider.upper()}")
     return schemas.ProviderStatusResponse(
@@ -29,11 +29,11 @@ async def get_provider_status_endpoint():
 @router.post("", response_model=schemas.ProviderStatusResponse)
 async def set_active_provider_endpoint(request: schemas.SetProviderRequest):
     """
-    Sets the active AI provider by calling the provider service.
+    Sets the active AI provider by calling the now asynchronous provider service.
     Triggers re-initialization of AI components.
     """
     new_provider = request.provider
-    current_provider = config.ACTIVE_AI_PROVIDER # Check current state
+    current_provider = config.ACTIVE_AI_PROVIDER # Check current state (sync read is fine)
 
     if new_provider == current_provider:
         logger.info(f"Provider already set to {current_provider}. No action taken.")
@@ -46,26 +46,28 @@ async def set_active_provider_endpoint(request: schemas.SetProviderRequest):
 
     # --- Call Service Layer ---
     try:
-        # Delegate the switching logic and re-initialization to the service
-        success = provider_service.switch_active_provider(new_provider)
+        # Delegate the switching logic and re-initialization to the async service
+        logger.debug(f"Awaiting provider service call to switch to {new_provider.upper()}...")
+        success = await provider_service.switch_active_provider(new_provider) # <<< Added await
+        logger.debug(f"Provider service call completed. Success: {success}")
 
         if success:
             # Service layer logs details
-            updated_provider = config.ACTIVE_AI_PROVIDER # Re-read config after successful switch
+            updated_provider = config.ACTIVE_AI_PROVIDER # Re-read config after successful switch (sync read)
             logger.info(f"Provider successfully switched to {updated_provider.upper()}.")
             return schemas.ProviderStatusResponse(
                 current_provider=updated_provider,
                 message=f"Successfully switched provider to {updated_provider.upper()}."
             )
         else:
-            # This path might be less likely if service raises exceptions on failure
-            logger.error(f"Provider service indicated failure switching to {new_provider.upper()}, but no exception was raised.")
+            # This path should be less likely now as service raises exceptions on failure
+            logger.error(f"Provider service returned False switching to {new_provider.upper()}, but no exception was raised. This indicates an issue in the service logic.")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Provider service reported failure without specific error."
+                detail="Provider service reported failure unexpectedly."
             )
 
-    # --- Error Handling ---
+    # --- Error Handling (Catches exceptions raised by the awaited service call) ---
     except ValueError as ve:
         # Catch configuration errors (e.g., missing API key) from service/config
         logger.error(f"Configuration error switching provider: {ve}")
@@ -75,14 +77,14 @@ async def set_active_provider_endpoint(request: schemas.SetProviderRequest):
         )
     except RuntimeError as rte:
         # Catch errors during re-initialization from the service layer
-        logger.error(f"Runtime error switching provider: {rte}", exc_info=False) # Maybe don't need full trace here
+        logger.error(f"Runtime error switching provider: {rte}", exc_info=False)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to switch provider due to an internal error: {rte}"
         )
     except Exception as e:
-        # Catch any other unexpected exceptions
-        logger.error(f"Unexpected error switching provider: {e}", exc_info=True)
+        # Catch any other unexpected exceptions from the service call or this endpoint
+        logger.error(f"Unexpected error switching provider endpoint: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred during the provider switch."

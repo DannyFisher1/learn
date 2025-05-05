@@ -1,0 +1,306 @@
+import React, { useState, useEffect } from 'react'
+
+/**
+ * Represents a single entity item.
+ */
+interface Entity {
+  id: number
+  name: string
+  description?: string
+}
+
+/**
+ * Props for the EntityForm component.
+ */
+interface EntityFormProps {
+  onSubmit: (entity: { name: string; description?: string }) => void
+  initialData?: { name: string; description?: string }
+  isUpdate?: boolean
+  onCancel?: () => void
+}
+
+/**
+ * Form component for creating or updating an entity.
+ * Uses Bootstrap classes for responsiveness.
+ * @param props - Properties for the form.
+ */
+const EntityForm: React.FC<EntityFormProps> = ({
+  onSubmit,
+  initialData,
+  isUpdate = false,
+  onCancel,
+}) => {
+  const [name, setName] = useState<string>(initialData?.name || '')
+  const [description, setDescription] = useState<string>(
+    initialData?.description || ''
+  )
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (name.trim() === '') {
+      alert('Name is required.')
+      return
+    }
+    onSubmit({ name, description })
+  }
+
+  return (
+    <form className="mb-4" onSubmit={handleSubmit}>
+      <div className="mb-3">
+        <label htmlFor="name" className="form-label">
+          Name
+        </label>
+        <input
+          type="text"
+          className="form-control"
+          id="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+      </div>
+      <div className="mb-3">
+        <label htmlFor="description" className="form-label">
+          Description
+        </label>
+        <textarea
+          className="form-control"
+          id="description"
+          rows={3}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        ></textarea>
+      </div>
+      <div className="d-flex justify-content-end gap-2">
+        {onCancel && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        )}
+        <button type="submit" className="btn btn-primary">
+          {isUpdate ? 'Update' : 'Create'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * Main page component that lists all entities with CRUD options.
+ */
+const IndexPage: React.FC = () => {
+  const [entities, setEntities] = useState<Entity[]>([])
+  const [loading, setLoading] = useState<boolean>(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showCreateForm, setShowCreateForm] = useState<boolean>(false)
+  const [editEntity, setEditEntity] = useState<Entity | null>(null)
+
+  /**
+   * Fetch all entities from the API.
+   */
+  const fetchEntities = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await fetch('/api/entities')
+      if (!response.ok) {
+        throw new Error(`Error fetching entities: ${response.statusText}`)
+      }
+      const data: Entity[] = await response.json()
+      setEntities(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  /**
+   * Handle creation of a new entity.
+   * @param entityData - Data for the new entity.
+   */
+  const handleCreate = async (entityData: {
+    name: string
+    description?: string
+  }) => {
+    try {
+      const response = await fetch('/api/entities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entityData),
+      })
+      if (!response.ok) {
+        throw new Error(`Error creating entity: ${response.statusText}`)
+      }
+      const newEntity: Entity = await response.json()
+      setEntities((prev) => [...prev, newEntity])
+      setShowCreateForm(false)
+    } catch (err) {
+      alert(
+        `Failed to create entity: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  /**
+   * Handle updating an existing entity.
+   * @param entity - The entity with updated data.
+   */
+  const handleUpdate = async (entity: Entity) => {
+    try {
+      const response = await fetch(`/api/entities/${entity.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: entity.name, description: entity.description }),
+      })
+      if (!response.ok) {
+        throw new Error(`Error updating entity: ${response.statusText}`)
+      }
+      const updatedEntity: Entity = await response.json()
+      setEntities((prev) =>
+        prev.map((e) => (e.id === updatedEntity.id ? updatedEntity : e))
+      )
+      setEditEntity(null)
+    } catch (err) {
+      alert(
+        `Failed to update entity: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  /**
+   * Handle deleting an entity.
+   * @param id - ID of the entity to delete.
+   */
+  const handleDelete = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this entity?')) return
+    try {
+      const response = await fetch(`/api/entities/${id}`, {
+        method: 'DELETE',
+      })
+      if (!response.ok) {
+        throw new Error(`Error deleting entity: ${response.statusText}`)
+      }
+      setEntities((prev) => prev.filter((e) => e.id !== id))
+    } catch (err) {
+      alert(
+        `Failed to delete entity: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  useEffect(() => {
+    fetchEntities()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="container my-4">
+        <div className="text-center">Loading...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="container my-4">
+        <div className="alert alert-danger" role="alert">
+          {error}
+        </div>
+        <button className="btn btn-primary" onClick={fetchEntities}>
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container my-4">
+      <h1 className="mb-4">Entities</h1>
+      {!showCreateForm && (
+        <button
+          className="btn btn-success mb-3"
+          onClick={() => setShowCreateForm(true)}
+        >
+          Create New Entity
+        </button>
+      )}
+      {showCreateForm && (
+        <div className="card mb-4 p-3">
+          <h4 className="mb-3">Create New Entity</h4>
+          <EntityForm
+            onSubmit={handleCreate}
+            onCancel={() => setShowCreateForm(false)}
+          />
+        </div>
+      )}
+      {editEntity && (
+        <div className="card mb-4 p-3">
+          <h4 className="mb-3">Update Entity</h4>
+          <EntityForm
+            initialData={{
+              name: editEntity.name,
+              description: editEntity.description,
+            }}
+            onSubmit={(data) =>
+              handleUpdate({ ...editEntity, ...data })
+            }
+            isUpdate
+            onCancel={() => setEditEntity(null)}
+          />
+        </div>
+      )}
+      {entities.length === 0 ? (
+        <p>No entities found.</p>
+      ) : (
+        <table className="table table-striped table-responsive">
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">Name</th>
+              <th scope="col">Description</th>
+              <th scope="col" className="text-end">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {entities.map((entity) => (
+              <tr key={entity.id}>
+                <th scope="row">{entity.id}</th>
+                <td>{entity.name}</td>
+                <td>{entity.description || '-'}</td>
+                <td className="text-end">
+                  <button
+                    className="btn btn-sm btn-primary me-2"
+                    onClick={() => setEditEntity(entity)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="btn btn-sm btn-danger"
+                    onClick={() => handleDelete(entity.id)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+export default IndexPage

@@ -18,15 +18,21 @@ import ThemeToggle from '@/components/ui/ThemeToggle';
 import ModelSelector from '@/components/common/ModelSelector';
 import { UploadDropdownRef } from '@/components/common/UploadDropdown';
 import UploadDropdown from '@/components/common/UploadDropdown';
-import CollapsibleSidebar from '@/components/layout/CollapsibleSidebar';
+import DocumentManager from '@/components/layout/DocumentManager';
 import IntegratedInput from '@/components/chat/IntegratedInput';
 import ChatMessages from '@/components/chat/ChatMessages';
 import StepsDisplay from '@/components/chat/StepsDisplay';
 import RagContextDisplay from '@/components/chat/RagContextDisplay';
 import ObservationDisplay from '@/components/chat/ObservationDisplay';
+import { Button } from "@/components/ui/button";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
 
 // Import Icons
-import { Info, Terminal } from 'lucide-react';
+import { Info, Terminal, Filter, ChevronDown } from 'lucide-react';
 
 // Constants
 const ALL_DOCUMENTS_VALUE = 'all';
@@ -53,7 +59,7 @@ export default function Home() {
     const uploadDropdownRef = useRef<UploadDropdownRef>(null);
 
     // --- UI Layout & Context State ---
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    // const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     // ** Right Pane State **
     const [activeContextSteps, setActiveContextSteps] = useState<IntermediateStep[] | null>(null);
     const [activeRagContext, setActiveRagContext] = useState<RagContextDocument[] | null>(null);
@@ -77,9 +83,6 @@ export default function Home() {
             return newSet;
         });
     }, []);
-
-    // --- UI Callbacks ---
-    const toggleSidebar = useCallback(() => { setIsSidebarOpen(prev => !prev); }, []);
 
     // --- Chat Logic Callbacks ---
     const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement> | string) => {
@@ -290,8 +293,8 @@ export default function Home() {
     const getScopeText = (): string => {
         const filenamesArray = Array.from(selectedFilenames);
         if (filenamesArray.length === 0) return "All Documents";
-        if (filenamesArray.length === 1) return `File: ${filenamesArray[0]}`;
-        return `${filenamesArray.length} Files Selected`;
+        if (filenamesArray.length === 1) return `${filenamesArray[0]}`;
+        return `${filenamesArray.length} files`;
     };
 
 
@@ -305,39 +308,53 @@ export default function Home() {
             {/* Top Bar */}
             <header className="h-14 flex-shrink-0 border-b flex items-center justify-between px-4">
                 <div><span className="font-bold text-lg">N</span></div>
-                <div className="flex items-center gap-2"><ModelSelector /><ThemeToggle /></div>
+                <div className="flex items-center gap-2">
+                    {/* Document Scope Popover Trigger */}
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-8 text-xs">
+                                <Filter className="mr-2 h-3 w-3" />
+                                Scope: {getScopeText()}
+                                <ChevronDown className="ml-2 h-3 w-3" />
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="end">
+                            <DocumentManager
+                                selectedFilenames={selectedFilenames}
+                                onFilenameToggle={handleFilenameSelectionToggle}
+                                triggerRefresh={refreshDocListTrigger}
+                                onDocumentsManaged={triggerDocListRefresh}
+                                uploadDropdownRef={uploadDropdownRef}
+                            />
+                        </PopoverContent>
+                    </Popover>
+
+                    {/* Existing Header Items */}
+                    <ModelSelector />
+                    <ThemeToggle />
+                </div>
             </header>
 
-            {/* Main Content Area */}
+            {/* Main Content Area - Updated layout */}
             <main className="flex flex-grow overflow-hidden">
 
-                 {/* Collapsible Sidebar */}
-                 <CollapsibleSidebar
-                     isOpen={isSidebarOpen}
-                     onToggle={toggleSidebar}
-                     selectedFilenames={selectedFilenames}
-                     onFilenameToggle={handleFilenameSelectionToggle}
-                     triggerRefresh={refreshDocListTrigger}
-                     onDocumentsManaged={triggerDocListRefresh}
-                     uploadDropdownRef={uploadDropdownRef}
-                 />
+                 {/* Collapsible Sidebar - REMOVED */}
+                 {/* <CollapsibleSidebar ... /> */}
 
                  {/* Center Interaction Pane */}
-                 <section className="flex-grow flex flex-col overflow-hidden border-r">
-                    {/* Chat Messages - Removed context props */}
+                 <section className="flex-grow flex flex-col overflow-hidden">
+                    {/* Chat Messages */}
                     <ChatMessages
                         messages={messages}
                         isAsking={isAsking}
                         currentAIMessageId={currentAIMessageId}
-                        // No context props needed here anymore
                     />
-                    {/* Integrated Input */}
+                    {/* Integrated Input - Pass scope text, remove sidebar toggle */}
                     <IntegratedInput
                         input={input} handleInputChange={handleInputChange}
                         handleSubmit={handleSubmit} handleKeyDown={handleKeyDown}
                         stopStreaming={stopStreaming} isAsking={isAsking}
-                        askError={askError} scopeText={getScopeText()}
-                        onToggleSidebar={toggleSidebar}
+                        askError={askError}
                     />
                  </section>
 

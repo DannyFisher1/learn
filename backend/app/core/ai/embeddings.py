@@ -14,59 +14,85 @@ from app.utils import get_logger
 
 logger = get_logger(__name__)
 
-# --- Global Variable for Embeddings Caching ---
-_embeddings: Optional[Embeddings] = None # Use the base Embeddings type
+# --- Module-level Cache ---
+# Stores the singleton instance for the current configuration
+_cached_embeddings_instance: Optional[Embeddings] = None
 
-# --- Embedding Model Initialization ---
-def _get_embeddings(force_reload: bool = False) -> Embeddings:
+def _create_embeddings_instance() -> Embeddings:
     """
-    Initializes and returns the appropriate embeddings model based on ACTIVE config.
-    Uses a singleton pattern but allows forced reload.
-    Called by vector_store.py during initialization and potentially by
-    provider_service.py during provider switching (indirectly via vector_store).
+    Internal function to create a new Embeddings instance based on current configuration.
+    Raises ValueError or RuntimeError on configuration or initialization errors.
     """
-    global _embeddings
-    # Re-initialize if force_reload is True OR if embeddings haven't been loaded yet
-    if _embeddings is None or force_reload:
-        # Use the dynamically updatable provider and model from config
-        provider = config.ACTIVE_AI_PROVIDER
-        model_name = config.ACTIVE_EMBEDDING_MODEL
-
-        logger.info(f"Initializing Embeddings (Provider: {provider.upper()}, Model: {model_name}, Force Reload: {force_reload})")
-        try:
-            if provider == "ollama":
-                _embeddings = OllamaEmbeddings(
-                    model=model_name,
-                    base_url=config.OLLAMA_BASE_URL # Use base config for URL
-                )
-            elif provider == "openai":
-                # Check key again just in case config state is bypassed or changed
-                if not config.OPENAI_API_KEY:
-                    error_msg = "OpenAI API Key not found for OpenAI embeddings."
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
-                _embeddings = OpenAIEmbeddings(
-                    model=model_name,
-                    api_key=config.OPENAI_API_KEY
-                )
-            else:
-                error_msg = f"Unsupported AI_PROVIDER for embeddings: {provider}"
+    provider = config.ACTIVE_AI_PROVIDER
+    model_name = config.ACTIVE_EMBEDDING_MODEL
+    logger.info(f"Creating NEW Embeddings instance (Provider: {provider.upper()}, Model: {model_name})")
+    instance: Optional[Embeddings] = None
+    try:
+        if provider == "ollama":
+            instance = OllamaEmbeddings(
+                model=model_name,
+                base_url=config.OLLAMA_BASE_URL
+            )
+        elif provider == "openai":
+            if not config.OPENAI_API_KEY:
+                error_msg = "OpenAI API Key not found for OpenAI embeddings."
                 logger.error(error_msg)
-                raise ValueError(error_msg) # Raise specific error for unsupported provider
+                raise ValueError(error_msg)
+            instance = OpenAIEmbeddings(
+                model=model_name,
+                api_key=config.OPENAI_API_KEY
+            )
+        else:
+            error_msg = f"Unsupported AI_PROVIDER for embeddings: {provider}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
-            logger.info("Embeddings model initialized successfully.")
+        logger.info("Embeddings instance created successfully.")
+        return instance
 
-        except ValueError as ve: # Catch specific configuration errors
-             logger.error(f"Configuration error initializing embeddings: {ve}")
-             _embeddings = None # Ensure reset on failure
-             raise # Re-raise the configuration error
-        except Exception as e:
-            logger.error(f"Failed to initialize embeddings model: {e}", exc_info=True)
-            _embeddings = None # Ensure reset on failure
-            raise RuntimeError(f"Embeddings initialization failed: {e}") # Raise generic runtime error
+    except Exception as e:
+        logger.error(f"Failed to create embeddings instance: {e}", exc_info=True)
+        raise RuntimeError(f"Embeddings instance creation failed: {e}") from e
 
-    # Ensure embeddings are not None after attempt
-    if _embeddings is None:
-         raise RuntimeError("Embeddings could not be initialized.")
+def get_embeddings() -> Embeddings:
+    """
+    Provides the Embeddings instance.
 
-    return _embeddings
+    Uses a module-level cache. Call `clear_embeddings_cache()` to invalidate.
+    Intended for use by components like the vector store initializer.
+    """
+    global _cached_embeddings_instance
+    if _cached_embeddings_instance is None:
+        logger.debug("No cached Embeddings instance found, creating new one.")
+        _cached_embeddings_instance = _create_embeddings_instance() # Can raise exceptions
+    else:
+        logger.debug("Returning cached Embeddings instance.")
+
+    if _cached_embeddings_instance is None:
+        logger.critical("Embeddings instance is None after initialization attempt!")
+        raise RuntimeError("Failed to get a valid Embeddings instance.")
+
+    return _cached_embeddings_instance
+
+def clear_embeddings_cache():
+    """
+    Clears the cached Embeddings instance.
+    Called when the provider configuration changes.
+    """
+    global _cached_embeddings_instance
+    logger.info("Clearing cached Embeddings instance.")
+    _cached_embeddings_instance = None
+
+# --- Deprecated Function (for reference during refactoring) ---
+# def _get_embeddings(force_reload: bool = False) -> Embeddings:
+#     """
+#     DEPRECATED: Use get_embeddings() and clear_embeddings_cache() instead.
+#     Initializes and returns the appropriate embeddings model based on ACTIVE config.
+#     Uses a singleton pattern but allows forced reload.
+#     """
+#     global _embeddings
+#     if _embeddings is None or force_reload:
+#        # ... old logic ...
+#     if _embeddings is None:
+#          raise RuntimeError("Embeddings could not be initialized.")
+#     return _embeddings

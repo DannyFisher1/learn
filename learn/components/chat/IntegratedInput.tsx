@@ -7,6 +7,7 @@ import TextareaAutosize from 'react-textarea-autosize';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PaperPlaneIcon, StopIcon, InfoCircledIcon } from '@radix-ui/react-icons'; // Using Radix icons
 import { cn } from '@/lib/utils';
+import { SendHorizontal, StopCircle, AlertCircle } from 'lucide-react'; // Removed ChevronRight, Menu
 
 // Define the props required by this new input component
 interface IntegratedInputProps {
@@ -14,17 +15,14 @@ interface IntegratedInputProps {
     // Accept direct string changes too
     handleInputChange: (event: React.ChangeEvent<HTMLTextAreaElement> | string) => void;
     // Accept direct string submissions too
-    handleSubmit: (event?: React.FormEvent | string) => void;
+    handleSubmit: (event?: React.FormEvent | string) => Promise<void>;
     handleKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void; // Keep keydown for Enter submit
-    stopStreaming?: () => void;
+    stopStreaming: () => void;
     isAsking: boolean;
     askError: string | null;
-    scopeText: string; // The text describing the current scope (e.g., "All Documents", "File: X.pdf")
-    // NEW: Callback to trigger opening the sidebar (e.g., when clicking the scope text)
-    onToggleSidebar?: () => void;
 }
 
-export default function IntegratedInput({
+const IntegratedInput: React.FC<IntegratedInputProps> = ({
     input,
     handleInputChange,
     handleSubmit,
@@ -32,9 +30,7 @@ export default function IntegratedInput({
     stopStreaming,
     isAsking,
     askError,
-    scopeText,
-    onToggleSidebar // <-- Receive sidebar toggle callback
-}: IntegratedInputProps) {
+}) => {
     const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
     // Focus textarea when isAsking becomes false
@@ -45,6 +41,16 @@ export default function IntegratedInput({
             return () => clearTimeout(timer);
         }
     }, [isAsking]);
+
+    useEffect(() => {
+        if (textAreaRef.current) {
+            textAreaRef.current.style.height = 'auto'; // Reset height
+            const scrollHeight = textAreaRef.current.scrollHeight;
+            // Set max height (e.g., 5 lines, assuming line height around 20px)
+            const maxHeight = 5 * 24;
+            textAreaRef.current.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
+        }
+    }, [input]);
 
     // Submit/Stop Button Handler (logic remains similar)
     const handleButtonClick = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -65,92 +71,60 @@ export default function IntegratedInput({
     };
 
     return (
-        // Removed form tag initially, can add back if needed for accessibility/semantic reasons
-        // Use padding and background that matches/blends with the message area above it
-        <div className="p-3 md:p-4 border-t bg-background flex-shrink-0 space-y-2">
-            {/* Top row for scope and errors */}
-            <div className="flex justify-between items-center px-1 min-h-[1.25rem]"> {/* Fixed height to prevent layout shifts */}
-                {/* Scope Display - Make it interactive */}
-                <TooltipProvider delayDuration={100}>
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                             <button
-                                 onClick={onToggleSidebar}
-                                 className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
-                                 aria-label="Toggle document sidebar"
-                             >
-                                <InfoCircledIcon className="w-3 h-3 flex-shrink-0" />
-                                <span className="truncate max-w-[200px] md:max-w-[300px]"> {/* Limit width */}
-                                     Scope: {scopeText}
-                                </span>
-                            </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">
-                            <p>Click to view/change document scope</p>
-                        </TooltipContent>
-                    </Tooltip>
-                </TooltipProvider>
+        <div className="flex items-end gap-2 p-4 border-t bg-background">
+            {/* Error Display */}
+            {askError && (
+                <div className="absolute bottom-full left-0 right-0 mb-1 px-4 py-1.5 bg-destructive/10 text-destructive text-xs font-medium border-t border-b border-destructive/30 flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <span>Error: {askError}</span>
+                </div>
+            )}
 
-                {/* Error display */}
-                {askError && !isAsking && (
-                    <p className="text-xs text-destructive text-right flex-shrink-0 ml-2">{askError}</p>
-                )}
-            </div>
-
-            {/* Main input row */}
-            <div className="flex items-end gap-2">
-                 {/* Removed ChatOptionsMenu */}
-
-                 {/* Textarea - updated styling */}
-                 <TextareaAutosize
+            {/* Text Input Area - Removed scope display */}
+            <div className="flex-grow relative">
+                <TextareaAutosize
                     ref={textAreaRef}
                     value={input}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
-                    placeholder="Ask a question..."
-                    disabled={isAsking}
-                    className={cn(
-                        // Base styling for flex, width, interaction
-                        "flex w-full resize-none overflow-hidden min-h-[40px] max-h-[150px]", // Allow more vertical space
-                        // Appearance: remove default border initially, add focus ring
-                        "rounded-lg border border-transparent bg-muted/60 px-3 py-2 text-sm",
-                        "placeholder:text-muted-foreground",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:border-primary/30 focus-visible:bg-background", // Enhance focus style
-                        "disabled:cursor-not-allowed disabled:opacity-60"
-                    )}
-                    aria-label="Chat input"
+                    placeholder="Ask anything... (Shift+Enter for newline)"
                     rows={1}
-                    maxRows={6} // Keep max rows
+                    className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 pr-10 overflow-y-auto max-h-[120px]"
+                    aria-label="Chat input"
+                    disabled={isAsking}
                 />
-
-                 {/* Removed ModelSelector - moved to top bar */}
-
-                {/* Send / Stop Button */}
-                <TooltipProvider delayDuration={100}>
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                type="button" // Use type="button" if not submitting a form directly
-                                onClick={handleButtonClick}
-                                size="icon"
-                                disabled={!isAsking && !input.trim()}
-                                aria-label={isAsking ? "Stop generating" : "Send message"}
-                                variant={isAsking ? "destructive" : "default"}
-                                className={cn(
-                                    "h-9 w-9 flex-shrink-0 self-end rounded-lg transition-all", // Match input border radius
-                                    // Add slight scaling effect on hover/focus when enabled
-                                    !isAsking && input.trim() && "hover:scale-105 active:scale-95"
-                                )}
-                            >
-                                {isAsking ? <StopIcon className="h-4 w-4" /> : <PaperPlaneIcon className="h-4 w-4" />}
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">
-                            <p>{isAsking ? "Stop Generating" : "Send Message (Enter)"}</p>
-                        </TooltipContent>
-                    </Tooltip>
-                </TooltipProvider>
+                {/* Character count or other indicators could go here absolute inside the textarea */}
             </div>
+
+            {/* Submit/Stop Button */}
+            <TooltipProvider delayDuration={100}>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            type="button"
+                            onClick={() => isAsking ? stopStreaming() : handleSubmit()}
+                            size="icon"
+                            className={cn(
+                                "rounded-full flex-shrink-0 w-9 h-9 transition-colors duration-200",
+                                isAsking
+                                    ? "bg-yellow-500 hover:bg-yellow-600 text-white"
+                                    : input.trim()
+                                        ? "bg-primary hover:bg-primary/90 text-primary-foreground"
+                                        : "bg-muted text-muted-foreground cursor-not-allowed"
+                            )}
+                            disabled={!isAsking && !input.trim()}
+                            aria-label={isAsking ? "Stop generating" : "Send message"}
+                        >
+                            {isAsking ? <StopCircle className="h-5 w-5" /> : <SendHorizontal className="h-5 w-5" />}
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                        {isAsking ? "Stop Generation" : (input.trim() ? "Send Message" : "Enter a message")}
+                    </TooltipContent>
+                </Tooltip>
+            </TooltipProvider>
         </div>
     );
-}
+};
+
+export default IntegratedInput;

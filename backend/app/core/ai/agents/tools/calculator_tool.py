@@ -5,7 +5,7 @@ from app.utils import get_logger
 logger = get_logger(__name__)
 
 @tool
-def evaluate_expression(expression: str) -> str:
+async def evaluate_expression(expression: str) -> str:
     """
     Use this tool ONLY for evaluating **SIMPLE, DIRECT numerical expressions**. It performs calculations exactly as written.
 

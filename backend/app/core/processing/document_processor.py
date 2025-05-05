@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Langchain imports for document handling
 from langchain_community.document_loaders import (
-    PyPDFLoader, 
+    PyPDFLoader,
     UnstructuredWordDocumentLoader,
     TextLoader,
     UnstructuredFileLoader  # Keep as fallback
@@ -29,6 +29,8 @@ def process_document_to_chunks(
 ) -> Optional[List[Document]]:
     """
     Loads text from PDF, TXT, or DOCX files, splits it into chunks, and adds metadata.
+    NOTE: This function itself is synchronous. It should be called from async code
+    using `asyncio.to_thread` or `loop.run_in_executor`.
 
     Args:
         file_path: Path to the document file.
@@ -45,7 +47,7 @@ def process_document_to_chunks(
         logger.error(f"File not found: {file_path_obj}")
         return None
 
-    # --- Determine file extension from ORIGINAL filename --- 
+    # --- Determine file extension from ORIGINAL filename ---
     original_path_obj = Path(original_filename)
     file_extension = original_path_obj.suffix.lower()
     file_type = file_extension.lstrip('.')
@@ -55,6 +57,7 @@ def process_document_to_chunks(
 
     # --- Direct File Read Check --- (Keep this for initial validation)
     try:
+        # Synchronous file read - potentially blocking for large reads/slow disks
         with open(file_path_obj, 'rb') as f:
             first_bytes = f.read(100)
             logger.debug(f"Directly read first {len(first_bytes)} bytes from {file_path_obj}: {first_bytes[:80]}...") # Log snippet
@@ -67,6 +70,7 @@ def process_document_to_chunks(
     docs = []
     try:
         # Select Loader based on file type
+        # The .load() methods are synchronous and potentially blocking
         if file_extension == ".pdf":
             loader = PyPDFLoader(str(file_path_obj))
             logger.debug(f"Using PyPDFLoader for {original_filename}.")
@@ -78,14 +82,15 @@ def process_document_to_chunks(
             # Attempt 1: TextLoader with chardet
             try:
                 import chardet
+                # Synchronous file read
                 raw_data = file_path_obj.read_bytes()
-                result = chardet.detect(raw_data)
+                result = chardet.detect(raw_data) # CPU-bound potentially
                 detected_encoding = result['encoding']
                 confidence = result['confidence']
                 if detected_encoding and confidence > 0.7: # Use if confidence is reasonable
                     logger.debug(f"Detected encoding {detected_encoding} (confidence: {confidence:.2f}), trying TextLoader.")
                     loader_attempt = TextLoader(str(file_path_obj), encoding=detected_encoding)
-                    docs = loader_attempt.load()
+                    docs = loader_attempt.load() # Blocking I/O
                     if docs:
                         logger.info(f"Successfully loaded with TextLoader (Encoding: {detected_encoding}).")
                         loader = loader_attempt # Mark success
@@ -102,7 +107,7 @@ def process_document_to_chunks(
                 try:
                     logger.debug("Using UnstructuredFileLoader (mode=elements) as fallback.")
                     loader_attempt = UnstructuredFileLoader(str(file_path_obj), mode="elements")
-                    docs = loader_attempt.load()
+                    docs = loader_attempt.load() # Blocking I/O + Parsing
                     if docs:
                         logger.info("Successfully loaded with UnstructuredFileLoader (mode=elements).")
                         loader = loader_attempt # Mark success
@@ -114,7 +119,7 @@ def process_document_to_chunks(
         elif file_extension == ".docx":
             loader = UnstructuredWordDocumentLoader(str(file_path_obj))
             logger.debug(f"Using UnstructuredWordDocumentLoader for {original_filename}.")
-            docs = loader.load()
+            docs = loader.load() # Blocking I/O + Parsing
 
         else:
             logger.error(f"Unsupported file type '{file_extension}' for {original_filename}")
@@ -129,6 +134,7 @@ def process_document_to_chunks(
         # ------------------------------
 
         # Split Text (Common logic for all successful loads)
+        # Synchronous, potentially CPU-bound for large documents
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
@@ -139,7 +145,7 @@ def process_document_to_chunks(
             logger.warning(f"No chunks generated after splitting {original_filename}. Initial docs might have been empty.")
             return None
 
-        # Add Metadata (User Tag + File Type)
+        # Add Metadata (User Tag + File Type) - Synchronous, but usually fast
         for chunk in chunks:
             chunk.metadata["source_file"] = original_filename
             chunk.metadata["file_type"] = file_type

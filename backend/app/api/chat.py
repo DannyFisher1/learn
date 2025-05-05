@@ -1,30 +1,36 @@
 # app/api/chat.py
 
 import logging
-from fastapi import APIRouter, HTTPException, status, Depends, Request
-from sse_starlette.sse import EventSourceResponse # Import for SSE
+# --- Remove Depends for BackgroundTasks, keep BackgroundTasks ---
+from fastapi import APIRouter, HTTPException, status, Depends, Request, BackgroundTasks
+# ----------------------------------------------------------------
+from sse_starlette.sse import EventSourceResponse
 import json
 
 # App imports
 from app import schemas
-from app.services import chat_service # Import the specific service
-from app.services.chat_service import AgentNotReadyError, handle_chat_request_stream
+from app.services import chat_service
+from app.services.chat_service import AgentNotReadyError # Removed handle_chat_request_stream import, call via service module
 from app.utils import get_logger
 
 logger = get_logger(__name__)
-# Consider adding a prefix like "/chat" if you have many top-level routers
-# router = APIRouter(prefix="/chat", tags=["Chat Agent"])
 router = APIRouter(tags=["Chat Agent"])
 
 
 @router.post("/ask", response_model=schemas.AskResponse)
-async def ask_agent_endpoint(request: schemas.AskRequest):
+async def ask_agent_endpoint(
+    request: schemas.AskRequest,
+    # --- FIX: Remove Depends() here ---
+    background_tasks: BackgroundTasks
+    # ----------------------------------
+):
     """
     Endpoint to ask a question, optionally filtering by filename or tag.
-    Delegates processing to the chat service.
-    Returns the agent's final answer and intermediate steps.
+    Delegates processing to the chat service, passing BackgroundTasks for
+    potential long-running operations like project generation.
+    Returns the agent's final answer or a job start message.
     """
-    # --- Input Validation ---
+    # --- Input Validation (No change) ---
     if not request.question or not request.question.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -32,16 +38,13 @@ async def ask_agent_endpoint(request: schemas.AskRequest):
         )
 
     # --- Call Service Layer ---
-    # The 'request' object now includes 'tag_filter' (as Optional[str])
-    # based on the updated AskRequest schema.
     try:
-        # Log the full request, including the new filter if present
         logger.debug(f"Received ask request: {request.model_dump(exclude_none=True)}")
-        # Delegate the core logic to the chat service, passing the whole request
-        response_data = await chat_service.handle_chat_request(request)
+        # Pass background_tasks to the service function
+        response_data = await chat_service.handle_chat_request(request, background_tasks)
         return response_data
 
-    # --- Error Handling (No changes needed here) ---
+    # --- Error Handling (No change) ---
     except AgentNotReadyError as anre:
         logger.error(f"Agent service unavailable: {anre}")
         raise HTTPException(
@@ -68,11 +71,17 @@ async def ask_agent_endpoint(request: schemas.AskRequest):
         )
 
 @router.post("/ask-stream")
-async def ask_agent_streaming_endpoint(request_body: schemas.AskRequest, request: Request):
+async def ask_agent_streaming_endpoint(
+    request_body: schemas.AskRequest,
+    # --- FIX: Remove Depends() here ---
+    background_tasks: BackgroundTasks
+    # ----------------------------------
+):
     """
     Endpoint to ask a question and stream the response using Server-Sent Events.
+    Passes BackgroundTasks to the service for potential long-running operations.
     """
-    # --- Input Validation (same as /ask) ---
+    # --- Input Validation (No change) ---
     if not request_body.question or not request_body.question.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -83,23 +92,16 @@ async def ask_agent_streaming_endpoint(request_body: schemas.AskRequest, request
 
     # --- Call Streaming Service Layer ---
     try:
-        # Get the async generator from the service
-        event_generator = handle_chat_request_stream(request_body)
-        
+        # Pass background_tasks to the streaming service function
+        event_generator = chat_service.handle_chat_request_stream(request_body, background_tasks)
+
         # Use EventSourceResponse to stream the generator's output
         return EventSourceResponse(event_generator)
 
+    # --- Error Handling (No change) ---
     except AgentNotReadyError as anre:
-        # For SSE, we can't easily raise HTTPException after starting the stream.
-        # The service function now yields error events, but handle bootstrap error here.
         logger.error(f"Agent service unavailable for streaming: {anre}")
-        # Return an immediate error response before streaming starts
-        # Note: This error handling might need refinement depending on how
-        # you want to signal errors *during* an established stream.
-        # The service currently yields error events for that.
         return EventSourceResponse([{"event": "error", "data": json.dumps({"error": f"Agent service unavailable: {anre}"})}])
-
     except Exception as e:
         logger.error(f"Unexpected error setting up /ask-stream: {e}", exc_info=True)
-        # Return an immediate error response
         return EventSourceResponse([{"event": "error", "data": json.dumps({"error": f"An unexpected error occurred during stream setup: {e}"})}])

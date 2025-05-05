@@ -131,3 +131,7 @@ REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+
+# Store the output base directory path as a string
+PROJECT_GENERATOR_OUTPUT_BASE_DIR_STR = os.getenv("DEFAULT_OUTPUT_BASE")
