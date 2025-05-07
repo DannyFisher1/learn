@@ -4,6 +4,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @import 'katex/dist/katex.min.css';
+@import '@xyflow/react/dist/style.css'; /* <-- Add this line */
 
 @theme inline {
   --color-background: var(--background);

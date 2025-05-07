@@ -6,342 +6,377 @@ import uuid
 import asyncio
 import time
 from typing import Dict, Any, List, AsyncGenerator, Tuple, Union, Optional
+
 from fastapi import BackgroundTasks
 
 # Langchain imports
-from langchain_core.messages import AIMessageChunk, HumanMessage, AIMessage, BaseMessage
-from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.messages import (
+    AIMessageChunk, HumanMessage, AIMessage, BaseMessage, ToolMessage, SystemMessage
+)
 from langchain_core.runnables import RunnableConfig
-from langchain_core.documents import Document
+from langgraph.graph.state import END # Import END
 
 # App imports
 from app import schemas, config
-from app.utils import get_logger, serialize_intermediate_steps, serialize_documents
-from app.core.ai.agents.executor import get_agent_executor
-# --- Import Job Store ---
-from app.core.jobs.store import get_job_store_instance # <<< Import Redis job store getter
-# ------------------------
-
+from app.utils import get_logger # Removed unused serialize_intermediate_steps, serialize_documents
+from app.core.ai.agents.executor import get_langgraph_app, AgentState 
+from app.core.jobs.store import get_job_store_instance
 logger = get_logger(__name__)
 
-# --- Import Project Generator Workflow ---
+# --- Project Generator Import ---
 try:
-    from app.core.project_generator.workflow import execute_project_generation_workflow # <<< Use correct function name
+    from app.core.project_generator.workflow import execute_project_generation_workflow
     PROJECT_GENERATOR_AVAILABLE = True
-    logger.info("Project Generator workflow ('execute_project_generation_workflow') loaded successfully.")
 except ImportError:
-    logger.warning("Project Generator workflow ('execute_project_generation_workflow') not found. The 'generate_software_project' tool will not function.")
+    logger.warning("Project Generator workflow not found. 'generate_software_project' tool will be disabled.")
     PROJECT_GENERATOR_AVAILABLE = False
-    async def execute_project_generation_workflow(request: str):
-         raise NotImplementedError("Project Generator workflow is not available.")
-# -----------------------------------------
-
+    async def execute_project_generation_workflow(request: str) -> AsyncGenerator[Dict[str, Any], None]:
+         yield { "type": "final_status", "status": "Failed", "message": "Error: Project Generator workflow component is not available.", "project_name": "Unavailable", "output_dir": None, "tests_passed": None, "errors": ["Project Generator workflow component is not available."], "total_time": 0 }
 
 class AgentNotReadyError(Exception):
-    """Exception raised when the agent is not ready."""
     pass
 
-# --- Removed In-Memory Job Store ---
-# _background_jobs: Dict[str, Dict[str, Any]] = {}
-# -----------------------------------
-
-
-# --- Background Task Runner (Uses RedisJobStore) ---
 async def run_project_gen_in_background(job_id: str, project_request: str):
-    """Runs the project generation workflow, updating status in the RedisJobStore."""
-    # --- Get Job Store Instance ---
+    # ... (Identical)
     try:
         job_store = get_job_store_instance()
     except Exception as store_err:
-         logger.error(f"Background Job [{job_id}]: CRITICAL - Failed to get Job Store instance: {store_err}", exc_info=True)
-         # Cannot proceed without the store
-         return
-    # -----------------------------
-
+        logger.error(f"BG Job [{job_id}]: Failed to get Job Store instance: {store_err}", exc_info=True)
+        return
     start_time = time.time()
-    logger.info(f"Background Job [{job_id}]: Starting project generation for request: '{project_request[:100]}...'")
-
-    # --- Update Job Status: Running ---
-    status_update = {
-        "status": "running",
-        "started_at": start_time,
-    }
-    await job_store.update_job(job_id, status_update)
-    # ---------------------------------
-
-    status = "running" # Local status variable
-    result_message = None
-    output_path = None
-    error_details = None
-
-    if not PROJECT_GENERATOR_AVAILABLE:
-        status = "failed"
-        error_details = "Project Generator feature is not available in this deployment."
-        logger.error(f"Background Job [{job_id}]: FAILED - Project Generator not available.")
-    else:
-        try:
-            # Wrap the potentially synchronous workflow function
-            final_message = await asyncio.to_thread(
-                execute_project_generation_workflow, project_request
-            )
-            # --- Parse result ---
-            if final_message and isinstance(final_message, str) and "generation finished" in final_message.lower():
-                status = "completed"
-                result_message = final_message
-                try:
-                    loc_marker = "Output Location: "; path_part = final_message.split(loc_marker, 1)
-                    if len(path_part) > 1: output_path = path_part[1].strip()
-                    elif "saved to:" in final_message.lower(): output_path = final_message.split("to:")[-1].strip()
-                except Exception as parse_err: logger.warning(f"Background Job [{job_id}]: Could not parse output path: {parse_err}")
-                logger.info(f"Background Job [{job_id}]: Project generation COMPLETED.")
+    logger.info(f"BG Job [{job_id}]: Starting generation for: '{project_request[:100]}...'")
+    await job_store.update_job(job_id, {"status": "running", "started_at": start_time})
+    status, result_message, output_path, error_details = "running", None, None, None
+    try:
+        final_result = None
+        async for update in execute_project_generation_workflow(project_request):
+            if update.get("type") == "status": logger.info(f"BG Job [{job_id}] Workflow Status [{update.get('step')}]: {update.get('message')}")
+            if update.get("type") == "final_status": final_result = update; break
+        if final_result:
+            final_status_str = final_result.get("status", "Unknown").lower()
+            result_message = final_result.get("message", "No final message.")
+            errors_from_workflow = final_result.get("errors", [])
+            if "success" in final_status_str or ("completed" in final_status_str and not errors_from_workflow):
+                status = "completed"; output_path = final_result.get("output_dir")
             else:
-                status = "failed"
-                error_details = final_message if isinstance(final_message, str) else "Project generation failed with unknown error/format."
-                logger.error(f"Background Job [{job_id}]: Project generation FAILED. Result: {error_details}")
-        except Exception as e:
-            status = "failed"
-            error_details = f"An unexpected error occurred during project generation: {str(e)}"
-            logger.exception(f"Background Job [{job_id}]: UNEXPECTED ERROR during project generation.")
-
-    end_time = time.time()
-    duration = end_time - start_time
-
-    # --- Update Job Status & Store Final Result (Redis) ---
-    final_update = {
-        "status": status,
-        "ended_at": end_time,
-        "duration_seconds": round(duration, 2),
-        "result_message": result_message,
-        "error_message": error_details,
-        "output_path": output_path,
-    }
+                 status = "failed"; error_details = result_message
+                 if errors_from_workflow: error_details += f" | Workflow Errors: {'; '.join(errors_from_workflow)}"
+        else:
+             status = "failed"; error_details = "Project generation workflow finished without providing a final status update."
+    except Exception as e:
+        status = "failed"; error_details = f"An unexpected error: {str(e)}"
+    end_time = time.time(); duration = end_time - start_time
+    final_update = {"status": status, "ended_at": end_time, "duration_seconds": round(duration, 2), "result_message": result_message if status == "completed" else None, "error_message": error_details if status == "failed" else None, "output_path": output_path}
     await job_store.update_job(job_id, final_update)
-    logger.info(f"Background Job [{job_id}]: Final status '{status}' updated in Redis job store.")
-    # ----------------------------------------------------
+    logger.info(f"BG Job [{job_id}]: Final status '{status}' updated in Redis.")
 
 
-# --- Non-Streaming Handler (Uses RedisJobStore) ---
-async def handle_chat_request(
-    request: schemas.AskRequest,
-    background_tasks: BackgroundTasks
-) -> schemas.AskResponse:
-    """Handles non-streaming chat requests. If project generator is triggered,
-       initializes job state in Redis and starts background task."""
-
-    # ... (Input Preparation logic remains the same) ...
+async def handle_chat_request(request: schemas.AskRequest, background_tasks: BackgroundTasks) -> schemas.AskResponse:
+    # ... (Identical, but ensure serialize_intermediate_steps is imported or handled if used)
+    from app.utils import serialize_intermediate_steps # Add back if used
     base_question = request.question; input_prefix = ""
     has_filenames = bool(request.filenames and len(request.filenames) > 0); has_tag = bool(request.tag_filter)
     if has_filenames and has_tag: filenames_str = ", ".join(request.filenames) if len(request.filenames) <= 3 else f"{len(request.filenames)} selected files"; input_prefix = f"Regarding the document(s) [{filenames_str}] with tag '{request.tag_filter}', answer this: "
     elif has_filenames: filenames_str = ", ".join(request.filenames) if len(request.filenames) <= 3 else f"{len(request.filenames)} selected files"; input_prefix = f"Regarding the document(s) [{filenames_str}], answer this: "
     elif has_tag: input_prefix = f"Regarding documents with the tag '{request.tag_filter}', answer this: "
-    agent_main_input = f"{input_prefix}{base_question}"; agent_input: Dict[str, Any] = {"input": agent_main_input}; langchain_history: List[BaseMessage] = []
+    user_input_content = f"{input_prefix}{base_question}"
+    messages: List[BaseMessage] = []
     if request.chat_history:
-        for msg in request.chat_history: sender = msg.get('sender'); text = msg.get('text', ''); (langchain_history.append(HumanMessage(content=text)) if sender == 'user' else langchain_history.append(AIMessage(content=text)) if sender == 'ai' else None) # type: ignore
-        if langchain_history: agent_input["chat_history"] = langchain_history
-
-    logger.info(f"NON-STREAMING: Final Agent Input Keys: {list(agent_input.keys())}")
-    agent_response: Optional[Dict[str, Any]] = None
-    # ... (Agent invocation try/except block remains the same) ...
+        for msg_data in request.chat_history: 
+            sender = msg_data.get('sender'); text = msg_data.get('text', '')
+            if sender == 'user': messages.append(HumanMessage(content=text))
+            elif sender == 'ai': messages.append(AIMessage(content=text))
+    messages.append(HumanMessage(content=user_input_content))
+    graph_input: AgentState = {"messages": messages}
+    final_state: Optional[AgentState] = None
     try:
-        agent_executor = get_agent_executor()
-        agent_response = await agent_executor.ainvoke(agent_input)
-        logger.info(f"NON-STREAMING: Agent Response Keys: {list(agent_response.keys()) if agent_response else 'None'}")
-    except RuntimeError as rte: raise AgentNotReadyError(f"Agent execution failed: {rte}") from rte
-    except Exception as e: raise RuntimeError(f"An unexpected error occurred while communicating with the agent: {e}") from e
-
-    if not agent_response: return schemas.AskResponse(answer="Sorry, I couldn't process your request.", intermediate_steps=[])
-
-    # --- Check if Project Generator was called ---
-    project_gen_triggered = False
-    project_request_arg = None
-    raw_steps = agent_response.get("intermediate_steps", [])
-    final_answer = agent_response.get("output", "")
-
-    if raw_steps:
-        for step in raw_steps:
-            if isinstance(step, tuple) and len(step) == 2:
-                action, observation = step
-                if isinstance(action, AgentAction) and action.tool == "generate_software_project":
-                    if not PROJECT_GENERATOR_AVAILABLE: final_answer = "Sorry, the project generation feature is currently unavailable."; project_gen_triggered = False; break
-                    project_gen_triggered = True
-                    project_request_arg = action.tool_input
-                    logger.info("NON-STREAMING: 'generate_software_project' tool detected.")
-                    break
-
-    # --- Handle Response based on Tool Call ---
-    if project_gen_triggered and isinstance(project_request_arg, str):
+        langgraph_app = get_langgraph_app()
+        run_config_obj: RunnableConfig = {"recursion_limit": 25}
+        final_state = await langgraph_app.ainvoke(graph_input, config=run_config_obj)
+    except RuntimeError as rte: raise AgentNotReadyError(f"LangGraph App execution failed: {rte}") from rte
+    except Exception as e: raise RuntimeError(f"An unexpected error: {e}") from e
+    if not final_state or not final_state.get("messages"):
+        return schemas.AskResponse(answer="Sorry, I couldn't process your request.", intermediate_steps=[])
+    final_messages = final_state["messages"]
+    final_answer_msg = final_messages[-1] if final_messages else None
+    final_answer_content = "Sorry, the interaction ended unexpectedly."
+    if isinstance(final_answer_msg, AIMessage): final_answer_content = final_answer_msg.content
+    project_gen_triggered = False; project_request_arg = None
+    intermediate_steps_list: List[Tuple[Dict, Any]] = []; processed_tool_call_ids = set()
+    for i, msg_item in enumerate(final_messages): 
+        if isinstance(msg_item, AIMessage) and msg_item.tool_calls:
+            for tool_call in msg_item.tool_calls:
+                 tool_call_id = tool_call.get('id')
+                 if not tool_call_id or tool_call_id in processed_tool_call_ids: continue
+                 tool_message_found = False
+                 for next_msg_idx in range(i + 1, len(final_messages)):
+                    next_msg = final_messages[next_msg_idx]
+                    if isinstance(next_msg, ToolMessage) and next_msg.tool_call_id == tool_call_id:
+                        tool_result = next_msg.content; tool_message_found = True
+                        action_dict = { "tool": tool_call.get('name', 'UnknownTool'), "tool_input": tool_call.get('args', {}), "log": f"Tool Used: {tool_call.get('name')}" }
+                        intermediate_steps_list.append((action_dict, tool_result))
+                        processed_tool_call_ids.add(tool_call_id)
+                        if action_dict["tool"] == "generate_software_project":
+                            if not PROJECT_GENERATOR_AVAILABLE: final_answer_content = "Sorry, project generation unavailable."; project_gen_triggered = False
+                            else: project_gen_triggered = True; project_request_arg = action_dict["tool_input"]
+                        break
+                 if not tool_message_found: logger.warning(f"No ToolMessage for call ID {tool_call_id}")
+    serialized_steps = serialize_intermediate_steps(intermediate_steps_list) 
+    if project_gen_triggered and project_request_arg is not None:
+        request_str = json.dumps(project_request_arg) if isinstance(project_request_arg, dict) else str(project_request_arg)
         job_id = str(uuid.uuid4())
-        logger.info(f"NON-STREAMING: Initializing project generation Job [{job_id}] in Redis and adding to background tasks.")
-        # --- Initialize Job State in Redis ---
         try:
             job_store = get_job_store_instance()
-            initial_job_data = {
-                "submitted_at": time.time(),
-                "request": project_request_arg,
-                # Ensure all fields expected by schema are present or None initially
-                "status": "pending", "started_at": None, "ended_at": None,
-                "duration_seconds": None, "result_message": None,
-                "error_message": None, "output_path": None
-            }
+            initial_job_data = { "submitted_at": time.time(), "request": request_str, "status": "pending" }
             await job_store.initialize_job(job_id, initial_job_data)
+            background_tasks.add_task(run_project_gen_in_background, job_id, request_str)
+            answer = f"Started project generation (Job ID: {job_id}). Check status later."
         except Exception as store_err:
-             logger.error(f"NON-STREAMING: Failed to initialize Job [{job_id}] in Redis: {store_err}", exc_info=True)
-             # Return an error response to the user? Or allow agent's original response?
-             # For now, let's return a specific error.
-             return schemas.AskResponse(
-                 answer="Sorry, there was an error initiating the project generation background job.",
-                 intermediate_steps=serialize_intermediate_steps(raw_steps) if raw_steps else []
-             )
-        # -------------------------------------
-        background_tasks.add_task(run_project_gen_in_background, job_id, project_request_arg)
-        answer = f"Okay, I've started generating the project (Job ID: {job_id}). This might take some time. You can check the status using the job ID."
-        intermediate_steps = serialize_intermediate_steps(raw_steps) if raw_steps else []
+             answer = "Error initiating project generation job."
     else:
-        answer = final_answer.strip() or "Sorry, I couldn't generate a response."
-        intermediate_steps = serialize_intermediate_steps(raw_steps) if raw_steps else []
-
-    source_documents = []
-
-    return schemas.AskResponse(
-        answer=answer,
-        source_documents=source_documents,
-        intermediate_steps=intermediate_steps
-    )
+        answer = final_answer_content.strip() or "Sorry, I couldn't generate a response."
+    return schemas.AskResponse(answer=answer, source_documents=[], intermediate_steps=serialized_steps)
 
 
-# --- Streaming Handler (Uses RedisJobStore) ---
+# --- Streaming Handler (REVISED V12.2 - Simplified op loop, focus on get_state after /messages op) ---
 async def handle_chat_request_stream(
     request: schemas.AskRequest,
     background_tasks: BackgroundTasks
 ) -> AsyncGenerator[Dict[str, str], None]:
-    """
-    Handles streaming chat requests. If project generator is triggered,
-    initializes job state in Redis, starts background task, yields job start message.
-    """
-    # ... (Input Preparation logic remains the same) ...
-    base_question = request.question; input_prefix = ""; has_filenames = bool(request.filenames and len(request.filenames) > 0); has_tag = bool(request.tag_filter)
+    logger.info(f"STREAMING V12.2 (Diag): Starting graph stream for request: {request.question[:50]}...")
+    
+    # --- Message Preparation ---
+    base_question = request.question; input_prefix = ""
+    has_filenames = bool(request.filenames and len(request.filenames) > 0); has_tag = bool(request.tag_filter)
     if has_filenames and has_tag: filenames_str = ", ".join(request.filenames) if len(request.filenames) <= 3 else f"{len(request.filenames)} selected files"; input_prefix = f"Regarding the document(s) [{filenames_str}] with tag '{request.tag_filter}', answer this: "
     elif has_filenames: filenames_str = ", ".join(request.filenames) if len(request.filenames) <= 3 else f"{len(request.filenames)} selected files"; input_prefix = f"Regarding the document(s) [{filenames_str}], answer this: "
     elif has_tag: input_prefix = f"Regarding documents with the tag '{request.tag_filter}', answer this: "
-    agent_main_input = f"{input_prefix}{base_question}"; agent_input: Dict[str, Any] = {"input": agent_main_input}; langchain_history: List[BaseMessage] = []
+    user_input_content = f"{input_prefix}{base_question}"
+    initial_messages_for_graph: List[BaseMessage] = [] # For graph input
     if request.chat_history:
-        for msg in request.chat_history: sender = msg.get('sender'); text = msg.get('text', ''); (langchain_history.append(HumanMessage(content=text)) if sender == 'user' else langchain_history.append(AIMessage(content=text)) if sender == 'ai' else None) # type: ignore
-        if langchain_history: agent_input["chat_history"] = langchain_history
+        for msg_data in request.chat_history:
+             sender = msg_data.get('sender'); text = msg_data.get('text', '')
+             if sender == 'user': initial_messages_for_graph.append(HumanMessage(content=text))
+             elif sender == 'ai': initial_messages_for_graph.append(AIMessage(content=text))
+    initial_messages_for_graph.append(HumanMessage(content=user_input_content))
+    graph_input: AgentState = {"messages": initial_messages_for_graph}
 
-    try: loggable_input = json.dumps(agent_input, default=str, indent=2)
-    except Exception: loggable_input = str(agent_input)
-    logger.debug(f"--- AGENT EXECUTOR INPUT ---\n{loggable_input}\n--------------------------")
-
-    # --- Streaming Logic ---
-    agent_executor = None
     project_gen_triggered = False
-    project_request_arg: Optional[str] = None
-    job_id: Optional[str] = None
-    final_event_processed = False
+    project_request_arg: Optional[Union[str, Dict]] = None
+    
+    current_debugger_node_id: str = "agent" 
+    last_yielded_node_start_id: Optional[str] = None
+    active_tool_call_info: Optional[Dict[str, Any]] = None 
+    agent_is_processing_tool_output = False 
+    processed_driving_message_ids = set() # To avoid re-processing the same logical message
+
+    logger.info(f"[V12.2_INIT_STATE] current_debugger_node_id='{current_debugger_node_id}', agent_is_processing_tool_output={agent_is_processing_tool_output}")
+
+    def _prepare_event(event_data: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        nonlocal last_yielded_node_start_id
+        etype = event_data.get("type")
+        node_id = event_data.get("nodeId")
+        if etype == "node_start":
+            if node_id == last_yielded_node_start_id and node_id is not None: return None
+            last_yielded_node_start_id = node_id
+        elif etype == "node_end" and node_id == last_yielded_node_start_id and node_id is not None:
+            last_yielded_node_start_id = None
+        return {"event": "log_data", "data": json.dumps(event_data, default=str)}
 
     try:
-        agent_executor = get_agent_executor()
-        if not agent_executor: raise AgentNotReadyError("Failed to initialize agent executor.")
-        logger.info(f"Invoking agent executor astream_events...")
+        langgraph_app = get_langgraph_app() # This should now have the checkpointer
+        if not langgraph_app: raise AgentNotReadyError("LangGraph App not ready.")
 
-        # --- Process Events ---
-        current_action: Optional[AgentAction] = None
-        async for event in agent_executor.astream_events(agent_input, version="v1"):
-            kind = event["event"]; name = event.get("name", ""); event_data = event.get("data", {})
+        run_config_obj: RunnableConfig = {
+            "recursion_limit": 25, 
+            "configurable": {"thread_id": str(uuid.uuid4())} # Essential for checkpointer & get_state
+        }
+        logger.info(f"Invoking LangGraph App astream_log V12.2 with config: {run_config_obj}")
 
-            # --- Standard Event Yielding ---
-            # ... (Keep handlers for on_chain_start, on_llm_stream, on_tool_start, on_agent_finish) ...
-            if kind == "on_chain_start":
-                 chain_input = event_data.get("input", {}); context_docs = chain_input.get("context")
-                 if isinstance(chain_input, dict) and "context" in chain_input and isinstance(context_docs, list) and (len(context_docs) == 0 or isinstance(context_docs[0], Document)):
-                      try: serialized_context = serialize_documents(context_docs); yield {"event": "rag_context", "data": json.dumps({"context": serialized_context})}
-                      except Exception as e: logger.error(f"Failed to serialize/yield RAG context: {e}", exc_info=True)
-            elif kind == "on_llm_stream" or kind == "on_chat_model_stream":
-                chunk_content = event_data.get("chunk", ""); token = None
-                if isinstance(chunk_content, str): token = chunk_content
-                elif isinstance(chunk_content, AIMessageChunk): token = chunk_content.content
-                if token and isinstance(token, str) and not project_gen_triggered:
-                    yield {"event": "token", "data": json.dumps({"token": token})}
-            elif kind == "on_tool_start":
-                 tool_name = event.get("name"); tool_input_data = event_data.get("input")
-                 if tool_name and tool_input_data is not None:
-                     logger.info(f"Tool Start: {tool_name}, Input: {tool_input_data}")
-                     try: current_action = AgentAction(tool=str(tool_name), tool_input=tool_input_data, log="..."); step_tuple = [(current_action, "⏳ Processing...")]; serialized = serialize_intermediate_steps(step_tuple); yield {"event": "step", "data": json.dumps({"step": serialized[0]})}
-                     except Exception as e: logger.error(f"Error processing on_tool_start: {e}"); current_action = None
-                 else: current_action = None
-            elif kind == "on_agent_finish": # Log agent finish
-                 logger.debug(f"--- AGENT EXECUTOR FINAL OUTPUT EVENT ({kind}) ---")
+        event = _prepare_event({"type": "node_start", "nodeId": current_debugger_node_id})
+        if event: yield event
 
-            # --- Yield Final Step & Check Project Gen ---
-            elif kind == "on_tool_end":
-                observation = event_data.get("output"); tool_name = current_action.tool if current_action else 'Unknown'
-                logger.debug(f"--- TOOL OBSERVATION RECEIVED (Tool: {tool_name}) ---")
-                if current_action is not None:
-                    logger.info(f"Tool End: {current_action.tool}")
-                    # Check for project generator tool
-                    if current_action.tool == "generate_software_project":
-                         if not PROJECT_GENERATOR_AVAILABLE: observation = "Error: Project Generation feature is unavailable."; project_gen_triggered = False; logger.warning("STREAMING: Agent called unavailable project generator.")
-                         else: project_gen_triggered = True; project_request_arg = current_action.tool_input; logger.info("Detected 'generate_software_project' tool call completion.")
-                    # Yield the step_final regardless of which tool it was
-                    try: step_tuple = [(current_action, observation)]; serialized = serialize_intermediate_steps(step_tuple); yield {"event": "step_final", "data": json.dumps({"step": serialized[0]})}
-                    except Exception as e: logger.error(f"Error processing on_tool_end: {e}"); yield {"event": "error", "data": json.dumps({"error": f"Failed to process tool result: {e}"})}
-                    current_action = None
+        # Keep track of the number of messages we've seen in the state to detect new ones
+        last_seen_message_count = len(initial_messages_for_graph)
 
+        chunk_idx = 0 
+        async for chunk in langgraph_app.astream_log(graph_input, config=run_config_obj):
+            # logger.debug(f"[V12.2_CHUNK] START CHUNK {chunk_idx}")
+            
+            # 1. Process token streams first from any op in this chunk
+            for op_idx_token, op_token in enumerate(chunk.ops):
+                path_token: str = op_token.get("path", "")
+                value_token = op_token.get("value")
+                if path_token.endswith(("/streamed_output_str/-", "/streamed_output/-")) and current_debugger_node_id == "agent":
+                    token_content = None
+                    if path_token.endswith("/streamed_output_str/-") and isinstance(value_token, str) and value_token:
+                        token_content = value_token
+                    elif path_token.endswith("/streamed_output/-") and isinstance(value_token, AIMessageChunk) and value_token.content:
+                        token_content = value_token.content
+                    if token_content:
+                        event = _prepare_event({"type": "token", "token": token_content, "nodeId": "agent"})
+                        if event: yield event
+            
+            # 2. After processing all ops in a chunk, check if the graph's message state has grown.
+            # This is a more robust way to detect that a new AIMessage or ToolMessage has been fully added.
+            try:
+                # Essential: Use the *same* run_config_obj for get_state
+                current_graph_state = langgraph_app.get_state(run_config_obj) 
+                all_current_messages_from_state = current_graph_state.values.get('messages', [])
+                
+                # Always yield state_update for the message history panel
+                if all_current_messages_from_state:
+                    serializable_messages_for_history = []
+                    for msg_val_hist in all_current_messages_from_state:
+                        msg_dict_data_hist = {"type": getattr(msg_val_hist, 'type', msg_val_hist.__class__.__name__.lower().replace("message","")), "content": getattr(msg_val_hist,'content', None), **({"tool_calls": getattr(msg_val_hist,'tool_calls', getattr(msg_val_hist, 'tool_call_chunks', None))} if isinstance(msg_val_hist, (AIMessage, AIMessageChunk)) else {}), **({"tool_call_id": getattr(msg_val_hist,'tool_call_id', None)} if isinstance(msg_val_hist, ToolMessage) else {})}
+                        serializable_messages_for_history.append({k: v_ for k, v_ in msg_dict_data_hist.items() if v_ is not None})
+                    event = _prepare_event({"type": "state_update", "state": {"messages": serializable_messages_for_history}})
+                    if event: yield event
 
-        # --- After Stream Loop ---
-        logger.info("Agent event stream async for loop FINISHED.")
-        final_event_processed = True
+                if len(all_current_messages_from_state) > last_seen_message_count:
+                    new_message_from_state: BaseMessage = all_current_messages_from_state[-1]
+                    last_seen_message_count = len(all_current_messages_from_state)
+                    
+                    msg_id = getattr(new_message_from_state, 'id', None)
+                    if msg_id and msg_id in processed_driving_message_ids:
+                        # logger.debug(f"[V12.2_MSG_ALREADY_PROCESSED] ID {msg_id}. Skipping logic.")
+                        continue 
 
-        # --- Trigger Background Task OR Finalize Normal Answer ---
-        if project_gen_triggered and isinstance(project_request_arg, str):
+                    logger.critical(f"[V12.2_NEW_STATE_MSG] === New Message Detected in State ===")
+                    logger.critical(f"[V12.2_NEW_STATE_MSG] Class: {new_message_from_state.__class__.__name__}, ID: {msg_id}")
+                    logger.critical(f"[V12.2_NEW_STATE_MSG] Current Debugger Node: {current_debugger_node_id}, Agent Processing Tool Output Flag: {agent_is_processing_tool_output}")
+                    
+                    message_tool_calls = getattr(new_message_from_state, 'tool_calls', getattr(new_message_from_state, 'tool_call_chunks', None))
+                    logger.critical(f"[V12.2_NEW_STATE_MSG] Extracted tool_calls: {message_tool_calls}")
+
+                    # --- A. Agent decides to call a tool ---
+                    if current_debugger_node_id == "agent" and not agent_is_processing_tool_output and \
+                       isinstance(new_message_from_state, (AIMessage, AIMessageChunk)) and message_tool_calls and len(message_tool_calls) > 0:
+                        logger.critical(f"[V12.2_LOGIC_A_HIT] Agent decides tool call.")
+                        if msg_id: processed_driving_message_ids.add(msg_id)
+                        # ... (event yielding and state transition for A - same as V11.6)
+                        event = _prepare_event({"type": "node_output", "nodeId": "agent", "output": new_message_from_state.dict()}); 
+                        if event: yield event
+                        event = _prepare_event({"type": "node_end", "nodeId": "agent"}); 
+                        if event: yield event
+                        tc_data = message_tool_calls[0] 
+                        args_data = getattr(tc_data, 'args', tc_data.get('args') if isinstance(tc_data, dict) else "{}")
+                        try: parsed_args = json.loads(args_data) if isinstance(args_data, str) else args_data
+                        except: parsed_args = args_data
+                        active_tool_call_info = {"id": getattr(tc_data, 'id', tc_data.get('id') if isinstance(tc_data, dict) else None),"name": getattr(tc_data, 'name', tc_data.get('name') if isinstance(tc_data, dict) else None),"args": parsed_args}
+                        logger.critical(f"[V12.2_LOGIC_A] Tool call details: {active_tool_call_info}")
+                        event = _prepare_event({"type": "tool_call", "toolCall": active_tool_call_info}); 
+                        if event: yield event
+                        if active_tool_call_info.get('name') == "generate_software_project": project_gen_triggered = True; project_request_arg = active_tool_call_info.get('args')
+                        current_debugger_node_id = "action" 
+                        logger.critical(f"[V12.2_TRANSITION_A_POST] New cur_node='{current_debugger_node_id}', tool_proc='{agent_is_processing_tool_output}'")
+                        event = _prepare_event({"type": "node_start", "nodeId": current_debugger_node_id}); 
+                        if event: yield event
+
+                    # --- B. Tool provides result ---
+                    elif current_debugger_node_id == "action" and isinstance(new_message_from_state, ToolMessage):
+                        logger.critical(f"[V12.2_LOGIC_B_HIT] Tool provides result.")
+                        if msg_id: processed_driving_message_ids.add(msg_id)
+                        # ... (event yielding and state transition for B - same as V11.6)
+                        tool_msg: ToolMessage = new_message_from_state
+                        tool_result_data = {"id": tool_msg.tool_call_id, "result": tool_msg.content}
+                        event = _prepare_event({"type": "tool_result", "toolResult": tool_result_data}); 
+                        if event: yield event
+                        event = _prepare_event({"type": "node_output", "nodeId": "action", "output": tool_msg.content}); 
+                        if event: yield event
+                        event = _prepare_event({"type": "node_end", "nodeId": "action"}); 
+                        if event: yield event
+                        active_tool_call_info = None 
+                        current_debugger_node_id = "agent" 
+                        agent_is_processing_tool_output = True 
+                        logger.critical(f"[V12.2_TRANSITION_B_POST] New cur_node='{current_debugger_node_id}', tool_proc='{agent_is_processing_tool_output}'")
+                        event = _prepare_event({"type": "node_start", "nodeId": current_debugger_node_id}); 
+                        if event: yield event
+                            
+                    # --- C. Agent gives final answer ---
+                    elif current_debugger_node_id == "agent" and \
+                         isinstance(new_message_from_state, (AIMessage, AIMessageChunk)) and \
+                         not (message_tool_calls and len(message_tool_calls) > 0):
+                        logger.critical(f"[V12.2_LOGIC_C_HIT] Agent final answer. tool_proc_flag: {agent_is_processing_tool_output}")
+                        if msg_id: processed_driving_message_ids.add(msg_id)
+                        # ... (event yielding and state transition for C - same as V11.6)
+                        event = _prepare_event({"type": "node_output", "nodeId": "agent", "output": new_message_from_state.dict()}); 
+                        if event: yield event 
+                        event = _prepare_event({"type": "node_end", "nodeId": "agent"}); 
+                        if event: yield event
+                        current_debugger_node_id = END 
+                        agent_is_processing_tool_output = False 
+                        logger.critical(f"[V12.2_TRANSITION_C_POST] New cur_node='{current_debugger_node_id}', tool_proc='{agent_is_processing_tool_output}'")
+                        event = _prepare_event({"type": "node_start", "nodeId": current_debugger_node_id}); 
+                        if event: yield event
+                        event = _prepare_event({"type": "node_end", "nodeId": current_debugger_node_id}); 
+                        if event: yield event
+                            
+                    else:
+                        logger.warning(f"[V12.2_MSG_UNHANDLED_LOGIC] Latest message from state ({new_message_from_state.__class__.__name__}) did not trigger A,B,C logic.")
+
+            except Exception as e:
+                    logger.error(f"Error processing latest message from state (V12.2): {e}", exc_info=True)
+            
+            # logger.debug(f"[V12.2_CHUNK_END] END CHUNK {chunk_idx}. Debugger state: node='{current_debugger_node_id}', tool_proc='{agent_is_processing_tool_output}'")
+            chunk_idx +=1
+
+        logger.info(f"[STREAMING_V12.2_DBG] LangGraph stream log loop FINISHED. Final debugger node: '{current_debugger_node_id}', tool_proc: {agent_is_processing_tool_output}")
+        
+        # --- Post-loop cleanup (identical) ---
+        if current_debugger_node_id and current_debugger_node_id != END:
+            logger.info(f"[STREAMING_V12.2_DBG] Post-loop cleanup. Current node: {current_debugger_node_id}. Transitioning to END.")
+            event = _prepare_event({"type": "node_end", "nodeId": current_debugger_node_id})
+            if event: yield event
+            current_debugger_node_id = END 
+            if last_yielded_node_start_id != END : 
+                event = _prepare_event({"type": "node_start", "nodeId": current_debugger_node_id})
+                if event: yield event
+            event = _prepare_event({"type": "node_end", "nodeId": current_debugger_node_id})
+            if event: yield event
+        elif not current_debugger_node_id and current_debugger_node_id != END : 
+            logger.warning("[STREAMING_V12.2_DBG] Post-loop: current_debugger_node_id is None and not END. Emitting END sequence.")
+            event = _prepare_event({"type": "node_start", "nodeId": END})
+            if event: yield event
+            event = _prepare_event({"type": "node_end", "nodeId": END})
+            if event: yield event
+
+        # --- Final Message/Job Submission (identical) ---
+        if project_gen_triggered and project_request_arg is not None:
+            # ... (project gen logic)
+            request_str = json.dumps(project_request_arg) if isinstance(project_request_arg, dict) else str(project_request_arg)
             job_id = str(uuid.uuid4())
-            logger.info(f"Initializing and adding project generation Job [{job_id}] to background tasks using Redis.")
-            # --- Initialize Job State in Redis ---
+            logger.info(f"STREAMING_V12.2: Initializing project generation Job [{job_id}].")
             try:
                 job_store = get_job_store_instance()
-                initial_job_data = {
-                    "submitted_at": time.time(), "request": project_request_arg,
-                    "status": "pending", "started_at": None, "ended_at": None, "duration_seconds": None,
-                    "result_message": None, "error_message": None, "output_path": None
-                }
+                initial_job_data = { "submitted_at": time.time(), "request": request_str, "status": "pending" }
                 await job_store.initialize_job(job_id, initial_job_data)
+                background_tasks.add_task(run_project_gen_in_background, job_id, request_str)
+                prepared_event = _prepare_event({"type": "final_message", "message": f"Okay, I've started generating the project (Job ID: {job_id}). You can check the status using the job ID."})
+                if prepared_event: yield prepared_event
             except Exception as store_err:
-                logger.error(f"STREAMING: Failed to initialize Job [{job_id}] in Redis: {store_err}", exc_info=True)
-                # Yield an error event to the client
-                yield {"event": "error", "data": json.dumps({"error": "Failed to initiate background job."})}
-                # Still yield end event afterwards
-            else:
-                # Only add task if initialization succeeded
-                background_tasks.add_task(run_project_gen_in_background, job_id, project_request_arg)
-                # Yield specific final message
-                yield {"event": "final_message", "data": json.dumps({"message": f"Okay, I've started generating the project (Job ID: {job_id}). This might take some time. You can check the status using the job ID."})}
-        else:
-            # If not project gen, the answer was streamed via tokens.
-            logger.info("Project generator not triggered. Answer (if any) was streamed via tokens.")
-            yield {"event": "final_message", "data": json.dumps({"message": "Processing complete."})}
+                logger.error(f"STREAMING_V12.2: Failed to initialize Job [{job_id}] in Redis: {store_err}", exc_info=True)
+                prepared_event = _prepare_event({"type": "error", "error": "Failed to initiate background job."})
+                if prepared_event: yield prepared_event
+        else: 
+             prepared_event = _prepare_event({"type": "final_message", "message": "Processing complete."})
+             if prepared_event: yield prepared_event
 
-        # --- End of Stream Event ---
-        yield {"event": "end", "data": json.dumps({})}
-
-    # --- Error Handling ---
     except AgentNotReadyError as anre:
-        logger.error(f"AgentNotReadyError during streaming setup: {anre}", exc_info=True)
-        if not final_event_processed: yield {"event": "error", "data": json.dumps({"error": f"Agent not ready: {anre}"})}; yield {"event": "end", "data": json.dumps({})}
+        logger.error(f"[STREAMING_V12.2] AgentNotReadyError: {anre}", exc_info=True)
+        event = _prepare_event({"type": "error", "error": f"Agent not ready: {anre}"})
+        if event: yield event
     except Exception as e:
-        logger.error(f"Unexpected error during streaming: {e}", exc_info=True)
-        if not final_event_processed: yield {"event": "error", "data": json.dumps({"error": f"An unexpected error occurred: {e}"})}; yield {"event": "end", "data": json.dumps({})}
+        logger.error(f"[STREAMING_V12.2] Unexpected error: {e}", exc_info=True)
+        event = _prepare_event({"type": "error", "error": f"An unexpected error occurred: {e}"})
+        if event: yield event
+    finally:
+        logger.info("[STREAMING_V12.2] Yielding stream_end.")
+        event = _prepare_event({"type": "stream_end"})
+        if event: yield event
 
-
-# --- Function to get job status (Uses RedisJobStore) ---
+# --- Get Job Status ---
 async def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieves status for a background job from the RedisJobStore."""
-    # --- Get Job Store Instance ---
-    try:
-        job_store = get_job_store_instance()
-    except Exception as store_err:
-         logger.error(f"Failed to get Job Store instance for get_job_status: {store_err}", exc_info=True)
-         return None # Cannot get status without store
-    # -----------------------------
-    # Retrieves the job data from Redis via the job store instance
+    try: job_store = get_job_store_instance()
+    except Exception as store_err: logger.error(f"Failed to get Job Store instance for get_job_status: {store_err}", exc_info=True); return None
     return await job_store.get_job(job_id)
-# ---------------------------------------------------------

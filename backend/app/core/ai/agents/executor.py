@@ -1,135 +1,182 @@
 # app/core/ai/agents/executor.py
 
 import logging
-from typing import Optional
 import os
+from typing import Optional, TypedDict, Annotated, Sequence, List, Union, Dict, Any
+# import operator # Not used
+import json
 
-# Langchain imports
+# Langchain & LangGraph imports
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.language_models import BaseChatModel
-from langchain import hub
-from langchain.agents import AgentExecutor, create_react_agent, create_openai_tools_agent
+from langchain_core.messages import BaseMessage # HumanMessage, AIMessage, ToolMessage removed as not directly used here for construction
+# from langchain_core.agents import AgentAction, AgentFinish # Not directly used
+# from langchain_community.tools.convert_to_openai import format_tool_to_openai_tool # Not used
+
+# --- LangGraph Imports ---
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.runnables import RunnableLambda # RunnablePassthrough removed as not used
+
+# ***** V_SCRATCH_FIX: Import MemorySaver *****
+from langgraph.checkpoint.memory import MemorySaver
+# *********************************************
 
 # App imports
 from app import config
-# --- Updated LLM import ---
-from app.core.ai.llm import get_llm, clear_llm_instance_cache # <<< Import new functions
-# --------------------------
-from app.core.ai.agents.tools import tools
-from app.core.ai.agents.chains import setup_combine_docs_chain # Keep this import
+from app.core.ai.llm import get_llm, clear_llm_instance_cache
+from app.core.ai.agents.tools import tools # Assuming this correctly lists your tools
 from app.utils import get_logger
 
 logger = get_logger(__name__)
 
-# --- Agent Executor Cache ---
-# Stores the singleton instance for the current configuration
-_cached_agent_executor: Optional[AgentExecutor] = None
+# --- Define LangGraph State ---
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
 
-# --- Agent Executor Setup ---
-def get_agent_executor(force_reload: bool = False) -> AgentExecutor:
-    """
-    Initializes and returns the AgentExecutor. Uses cached instance unless
-    force_reload is True. Handles LLM cache clearing on force_reload.
-    """
-    global _cached_agent_executor
-    # Use a combined condition: reload if forced OR if no cached executor exists
-    if force_reload or _cached_agent_executor is None:
-        logger.info(f"Initializing Agent Executor (Force Reload: {force_reload})")
+# --- Helper Function to Log Agent Output ---
+def log_agent_output(llm_response: BaseMessage) -> BaseMessage:
+    """Logs the raw output from the LLM within the agent node before formatting."""
+    try:
+        if hasattr(llm_response, 'dict'): # For Pydantic models like AIMessage
+            log_output = json.dumps(llm_response.dict(), indent=2)
+        elif isinstance(llm_response, BaseMessage): # Fallback for other BaseMessage types
+             log_output = f"Type: {type(llm_response).__name__}\nContent Snippet: {str(llm_response.content)[:200]}...\nTool Calls: {getattr(llm_response, 'tool_calls', 'N/A')}"
+        else:
+            log_output = str(llm_response) # General fallback
+    except Exception as log_err:
+        logger.warning(f"Could not serialize LLM response for agent output logging: {log_err}")
+        log_output = str(llm_response) # Fallback on serialization error
+    logger.debug(f"--- AGENT NODE RAW LLM OUTPUT ---\n{log_output}\n------------------------------")
+    return llm_response
 
-        # --- Clear LLM cache if forcing reload ---
+# --- Helper Function to format agent output ---
+def format_agent_output_for_state(llm_response: BaseMessage) -> Dict[str, Any]:
+    """Wraps the LLM response in the dictionary structure expected by AgentState for update."""
+    return {"messages": [llm_response]}
+
+# --- Agent Node Factory ---
+def create_agent_node(llm: BaseChatModel, system_prompt: str):
+    """
+    Factory function to create the agent node runnable.
+    Logs the LLM output before formatting it for state update.
+    """
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="messages"),
+        ]
+    )
+    # Bind tools if OpenAI and tools are provided. Other models might handle tools differently or via agent/executor.
+    llm_with_tools = llm
+    if config.ACTIVE_AI_PROVIDER == "openai" and tools: # Ensure tools list is not empty
+        logger.debug(f"Agent Node: Binding {len(tools)} tools directly to OpenAI LLM.")
+        llm_with_tools = llm.bind_tools(tools)
+    elif tools: # For Ollama or other providers, a different binding mechanism might be used by the agent itself.
+        logger.debug(f"Agent Node: Tools available, but direct LLM binding is specific to OpenAI. Provider: {config.ACTIVE_AI_PROVIDER}")
+
+
+    agent_runnable = (
+        prompt
+        | llm_with_tools
+        | RunnableLambda(log_agent_output) 
+        | RunnableLambda(format_agent_output_for_state)
+    )
+    return agent_runnable
+
+
+# --- Tool Execution Node (Using Prebuilt) ---
+tool_node = ToolNode(tools) # This uses the 'tools' list imported from app.core.ai.agents.tools
+
+# --- Graph Definition ---
+_cached_langgraph_app: Optional[any] = None
+_memory_saver: Optional[MemorySaver] = None # Cache the checkpointer instance
+
+def get_langgraph_app(force_reload: bool = False) -> any:
+    """
+    Initializes and returns the compiled LangGraph application.
+    Uses cached instance unless force_reload is True.
+    Includes a MemorySaver checkpointer to enable get_state().
+    """
+    global _cached_langgraph_app, _memory_saver
+    if force_reload or _cached_langgraph_app is None:
+        logger.info(f"Initializing LangGraph App (Force Reload: {force_reload})")
+
         if force_reload:
             logger.debug("Force Reload requested: Clearing LLM instance cache first.")
-            clear_llm_instance_cache()
-            # Also clear the agent executor cache itself
-            _cached_agent_executor = None
-        # -----------------------------------------
+            clear_llm_instance_cache() # Assuming this clears the LLM used by the agent
+            _cached_langgraph_app = None
+            _memory_saver = None # Also clear the checkpointer if reloading graph
 
         try:
-            # --- Read System Prompt (No change here) ---
-            system_prompt_content = "You are LearnMate, an advanced AI Learning Assistant..." # Use your full prompt
+            # --- Load System Prompt ---
+            system_prompt_content = "You are LearnMate, an advanced AI assistant." # Default
+            # Assuming config.BASE_DIR points to the 'backend' directory
             prompt_file_path = os.path.join(config.BASE_DIR, "prompts", "system_prompt.txt")
             try:
-                with open(prompt_file_path, "r", encoding='utf-8') as f: # Added encoding
-                    raw_prompt_content = f.read()
-                # system_prompt_content = raw_prompt_content.replace("{", "{{").replace("}", "}}") # Escaping might not be needed with ChatPromptTemplate
-                system_prompt_content = raw_prompt_content # Use raw if ChatPromptTemplate handles it
+                with open(prompt_file_path, "r", encoding='utf-8') as f: 
+                    system_prompt_content = f.read()
                 logger.info(f"Successfully loaded system prompt from {prompt_file_path}")
             except FileNotFoundError:
                 logger.warning(f"System prompt file not found at {prompt_file_path}. Using default.")
-                system_prompt_content = "You are a helpful assistant." # Fallback default
             except Exception as e:
-                logger.error(f"Error reading system prompt file {prompt_file_path}: {e}. Using default.")
-                system_prompt_content = "You are a helpful assistant." # Fallback default
-            # --------------------------------------------
-
-            # 1. Get the LLM instance using the new getter
-            # This will now use the cached instance unless clear_llm_instance_cache() was called
-            logger.debug("Getting LLM instance for Agent Executor...")
-            llm = get_llm() # <<< Use the new getter
+                 logger.warning(f"Error loading system prompt file {prompt_file_path}: {e}. Using default.")
+            
+            # --- Get LLM ---
+            logger.debug("Getting LLM instance for LangGraph...")
+            llm = get_llm() # This gets the currently configured LLM (OpenAI or Ollama)
             logger.debug("LLM instance obtained.")
-
-            # 2. Ensure the Combine Docs Chain is ready
-            # Pass force_reload flag - setup_combine_docs_chain needs update
-            # to use the new get_llm() and handle force_reload appropriately.
-            # For now, assume it works correctly after its own refactor.
-            logger.debug("Setting up Combine Docs Chain...")
-            setup_combine_docs_chain(force_reload_llm=force_reload)
-            logger.debug("Combine Docs Chain setup complete.")
-
-
-            # 3. Select Agent Type and Prompt (No change here)
-            if not tools:
-                 logger.warning("No tools found/imported for the agent executor.")
-
-            if config.ACTIVE_AI_PROVIDER == "openai":
-                logger.info("Using OpenAI Tools Agent")
-                # Use the loaded system prompt content
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", system_prompt_content),
-                    MessagesPlaceholder("chat_history", optional=True),
-                    ("human", "{input}"),
-                    MessagesPlaceholder("agent_scratchpad"),
-                ])
-                agent = create_openai_tools_agent(llm, tools, prompt)
-            else: # Ollama uses ReAct agent
-                logger.info("Using ReAct Agent")
-                # ReAct prompt might need adjustment to include the detailed system prompt effectively
-                react_prompt = hub.pull("hwchase17/react-chat")
-                # Potentially modify react_prompt messages here if needed
-                agent = create_react_agent(llm, tools, react_prompt)
-
-            # 4. Create the Agent Executor instance
-            logger.debug("Creating AgentExecutor instance...")
-            agent_executor_instance = AgentExecutor(
-                agent=agent,
-                tools=tools,
-                verbose=True, # Keep verbose for debugging
-                handle_parsing_errors="Check available tools and your input format, or ask me to try again.", # More user-friendly error
-                max_iterations=5, # Keep max iterations reasonable
-                return_intermediate_steps=True,
-                # Consider adding memory if chat_history placeholder is used extensively
+            
+            # --- Create Agent Node ---
+            agent_runnable = create_agent_node(llm, system_prompt_content)
+            
+            # --- Define the Graph Workflow ---
+            workflow = StateGraph(AgentState)
+            workflow.add_node("agent", agent_runnable)
+            
+            # 'tool_node' is already defined globally using ToolNode(tools)
+            logger.debug("Graph Nodes: Using prebuilt 'ToolNode' for the 'action' node.")
+            workflow.add_node("action", tool_node) 
+            
+            workflow.set_entry_point("agent")
+            
+            logger.debug("Graph Edge: Using standard 'tools_condition' for routing from 'agent'.")
+            workflow.add_conditional_edges(
+                "agent",
+                tools_condition, # This prebuilt condition checks for tool_calls in AIMessage
+                {"tools": "action", END: END} # If tool_calls, go to "action"; otherwise, go to END
             )
-            logger.info("Agent Executor initialized successfully (intermediate steps ENABLED).")
+            
+            workflow.add_edge("action", "agent") # Edge back from tool execution to agent for processing results
 
-            # --- Cache the newly created instance ---
-            _cached_agent_executor = agent_executor_instance
-            # --------------------------------------
-
+            # --- Initialize MemorySaver Checkpointer ---
+            if _memory_saver is None:
+                logger.debug("Initializing new MemorySaver for LangGraph checkpointer.")
+                _memory_saver = MemorySaver()
+            
+            logger.debug("Compiling LangGraph with MemorySaver checkpointer...")
+            compiled_app = workflow.compile(checkpointer=_memory_saver) # Compile with the checkpointer
+            logger.info("LangGraph App compiled successfully with MemorySaver.")
+            _cached_langgraph_app = compiled_app
+            
         except Exception as e:
-            logger.error(f"Failed to initialize Agent Executor: {e}", exc_info=True)
-            _cached_agent_executor = None # Reset cache on failure
-            raise RuntimeError(f"Agent Executor initialization failed: {e}") from e
+            logger.error(f"Failed to initialize LangGraph App: {e}", exc_info=True)
+            _cached_langgraph_app = None
+            _memory_saver = None # Clear on failure
+            raise RuntimeError(f"LangGraph App initialization failed: {e}") from e
 
-    # Final check before returning
-    if _cached_agent_executor is None:
-         logger.critical("Agent executor is None after initialization attempt!")
-         raise RuntimeError("Agent Executor is not available after initialization attempt.")
+    if _cached_langgraph_app is None:
+         logger.critical("LangGraph App is None after initialization attempt!")
+         raise RuntimeError("LangGraph App is not available after initialization attempt.")
 
-    logger.debug("Returning Agent Executor instance.")
-    return _cached_agent_executor
+    logger.debug("Returning compiled LangGraph App instance.")
+    return _cached_langgraph_app
 
-def clear_agent_executor_cache():
-    """Clears the cached agent executor instance."""
-    global _cached_agent_executor
-    logger.info("Clearing cached Agent Executor instance.")
-    _cached_agent_executor = None
+# --- Cache Clearing ---
+def clear_langgraph_cache():
+    """Clears the cached LangGraph app instance and its checkpointer."""
+    global _cached_langgraph_app, _memory_saver
+    logger.info("Clearing cached LangGraph App instance and MemorySaver.")
+    _cached_langgraph_app = None
+    _memory_saver = None

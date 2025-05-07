@@ -11,7 +11,7 @@ from app import config
 from app.utils import get_logger
 # Import core components/services needed for lifespan startup checks
 from app.core.components import vector_store
-from app.core.ai.agents.executor import get_agent_executor
+from app.core.ai.agents.executor import get_langgraph_app
 # --- Import Job Store for Lifespan ---
 from app.core.jobs.store import get_job_store_instance # <<< Import job store getter
 # --------------------------------------
@@ -23,6 +23,7 @@ from app.api import chat as chat_router
 from app.api import documents as documents_router
 from app.api import providers as providers_router
 from app.api import jobs as jobs_router
+from app.api import graph as graph_router
 
 # --- Lifespan for Startup/Shutdown ---
 @asynccontextmanager
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):
 
         # --- Initialize Agent Executor ---
         logger.info("Initializing Agent Executor...")
-        get_agent_executor()
+        get_langgraph_app()
         logger.info("Agent Executor initialized.")
         # -------------------------------
 
@@ -108,7 +109,7 @@ app.include_router(chat_router.router)
 app.include_router(documents_router.router) # Assumes prefix="/documents" in router file
 app.include_router(providers_router.router) # Assumes prefix="/config/provider" in router file
 app.include_router(jobs_router.router)      # Assumes prefix="/jobs" in router file
-
+app.include_router(graph_router.router)    # Assumes prefix="/graph" in router file
 logger.info("API routers included: Chat, Documents, Providers, Jobs.")
 
 # --- Root Endpoint ---

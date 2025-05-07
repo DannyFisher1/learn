@@ -92,7 +92,7 @@ async def ask_agent_streaming_endpoint(
 
     # --- Call Streaming Service Layer ---
     try:
-        # Pass background_tasks to the streaming service function
+        # Fix: Remove 'await' keyword since handle_chat_request_stream returns an async generator
         event_generator = chat_service.handle_chat_request_stream(request_body, background_tasks)
 
         # Use EventSourceResponse to stream the generator's output
