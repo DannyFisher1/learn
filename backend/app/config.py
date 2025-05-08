@@ -42,7 +42,7 @@ except ValueError:
 # Use pathlib for better path management
 BASE_DIR = Path(__file__).resolve().parent.parent # Project root (backend/)
 UPLOAD_DIR = BASE_DIR / os.getenv("UPLOAD_DIR", "data/uploads")
-VECTOR_STORE_DIR = BASE_DIR / os.getenv("VECTOR_STORE_DIR", "data/vector_store")
+VECTOR_STORE_DIR = BASE_DIR / os.getenv("VECTOR_STORE_DIR", "data")
 
 
 SEARXNG_URL = os.getenv("SEARXNG_URL")

@@ -1,0 +1,17 @@
+**/__pycache__/
+**/venv/
+**/node_modules/
+*.log
+*.md
+.env
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+
+node_modules
+npm-debug.log
+*.tsbuildinfo

@@ -88,7 +88,7 @@ app = FastAPI(
 )
 
 # --- CORS Configuration ---
-origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000, http://chroma:6000")
 origins = [origin.strip() for origin in origins_str.split(',') if origin.strip()]
 
 if not origins:

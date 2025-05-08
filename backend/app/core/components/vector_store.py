@@ -74,8 +74,10 @@ def get_vectorstore(force_reload_embeddings: bool = False) -> Chroma:
             vs_instance: Optional[Chroma] = None # Temporary variable for new instance
 
             if getattr(config, 'CHROMA_USE_HTTP', False):
-                host = getattr(config, 'CHROMA_HTTP_HOST', "localhost")
-                port = getattr(config, 'CHROMA_HTTP_PORT', 8000)
+                host = getattr(config, 'CHROMA_HTTP_HOST', "chroma")
+                logger.info(f"CHROMA_HTTP_HOST: {host}")
+                port = getattr(config, 'CHROMA_HTTP_PORT', 6000)
+                logger.info(f"CHROMA_HTTP_PORT: {port}")
                 logger.info(f"Attempting to connect to Chroma HTTP client at {host}:{port}")
                 chroma_client = HttpClient(host=host, port=port, settings=Settings(anonymized_telemetry=False))
                 # Test connection explicitly? client.heartbeat() might be useful

@@ -1,0 +1,58 @@
+name: learnstack
+
+services:
+  backend:
+    build:
+      context: ./backend
+    volumes:
+      - ./backend:/app
+    ports:
+      - "9000:9000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      CHROMA_URL: http://chroma:6000
+    depends_on:
+      - chroma
+      - redis
+      - searxng
+
+
+  # frontend:
+  #   build:
+  #     context: ./learn
+  #   volumes:
+  #     - ./learn:/app
+  #   ports:
+  #     - "3000:3000"
+  #   # depends_on:
+  #   #   - backend
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - ./backend/redis-data:/data
+    ports:
+      - "6379:6379"
+
+  chroma:
+    image: chromadb/chroma
+    command: ["run", "--host", "0.0.0.0", "--port", "6000"]
+    volumes:
+      - ./backend/chroma:/chroma
+    ports:
+      - "6000:6000"
+
+  searxng:
+    image: searxng/searxng
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    env_file: .env.local
+    volumes:
+      - ./searxng-limiter.toml:/etc/searxng/limiter.toml
+      - ./searxng-settings.yml:/etc/searxng/settings.yml
+      - searxng_data:/data
+
+
+
+volumes:
+  searxng_data:

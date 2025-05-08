@@ -11,7 +11,7 @@ import json
 from app import schemas
 from app.services import chat_service
 from app.services.chat_service import AgentNotReadyError # Removed handle_chat_request_stream import, call via service module
-from app.utils import get_logger
+from app.utils import get_logger # Added this import
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["Chat Agent"])
