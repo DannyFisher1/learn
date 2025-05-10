@@ -5,7 +5,6 @@ from typing import List, Optional, Literal, Dict, Any
 import time # <<< Add import for default factory
 
 # --- Existing Schemas ---
-
 class AskRequest(BaseModel):
     question: str
     chat_history: Optional[List[dict]] = None
@@ -37,63 +36,54 @@ class DocumentListResponse(BaseModel):
     documents: List[DocumentDetail]
 
 
-# --- NEW Job Status Schema ---
+# --- NEW: Job Schemas ---
 
-class JobStatusResponse(BaseModel):
-    """Response model for background job status."""
+# Standardized Job Status Enum (can also use Python Enum class)
+JOB_STATUS_PENDING = "PENDING"
+JOB_STATUS_RUNNING = "RUNNING"
+JOB_STATUS_COMPLETED = "COMPLETED"
+JOB_STATUS_FAILED = "FAILED"
+JOB_STATUS_CANCELED = "CANCELED"
+
+class JobMetadataBase(BaseModel):
     job_id: str
-    status: Literal["pending", "running", "completed", "failed", "unknown"] = Field(default="unknown", description="Current status of the background job.")
-    submitted_at: float = Field(default_factory=time.time, description="Timestamp when the job was submitted.")
-    started_at: Optional[float] = Field(None, description="Timestamp when the job processing started.")
-    ended_at: Optional[float] = Field(None, description="Timestamp when the job processing ended.")
-    duration_seconds: Optional[float] = Field(None, description="Total duration of the job execution in seconds.")
-    request: Optional[str] = Field(None, description="Original request that triggered the job (e.g., project description).")
-    result_message: Optional[str] = Field(None, description="Success message (e.g., path to output). Populated when status is 'completed'.")
-    error_message: Optional[str] = Field(None, description="Error details if the job failed. Populated when status is 'failed'.")
-    output_path: Optional[str] = Field(None, description="Path to generated project output, if successful and applicable.")
+    task_type: str
+    status: str = JOB_STATUS_PENDING
+    created_at: float # Unix timestamp
+    updated_at: float # Unix timestamp
+    progress_message: Optional[str] = None
+    error_message: Optional[str] = None
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "job_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-                    "status": "completed",
-                    "submitted_at": 1678886400.0,
-                    "started_at": 1678886401.5,
-                    "ended_at": 1678886521.8,
-                    "duration_seconds": 120.3,
-                    "request": "Create a simple flask app",
-                    "result_message": "Success: Project generation finished in 120.30 seconds!\nOutput Location: /app/data/generated_projects/simple_flask_app_20230315_132201",
-                    "error_message": None,
-                    "output_path": "/app/data/generated_projects/simple_flask_app_20230315_132201"
-                },
-                {
-                    "job_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
-                    "status": "failed",
-                    "submitted_at": 1678887000.0,
-                    "started_at": 1678887001.0,
-                    "ended_at": 1678887015.3,
-                    "duration_seconds": 14.3,
-                    "request": "Generate a complex AI model",
-                    "result_message": None,
-                    "error_message": "An unexpected error occurred during project generation: ValueError('Missing required parameter')",
-                    "output_path": None
-                },
-                 {
-                    "job_id": "b2c3d4e5-f6a7-8901-2345-67890abcdef0",
-                    "status": "running",
-                    "submitted_at": 1678887100.0,
-                    "started_at": 1678887100.5,
-                    "ended_at": None,
-                    "duration_seconds": None,
-                    "request": "Build a full-stack application",
-                    "result_message": None,
-                    "error_message": None,
-                    "output_path": None
-                }
-            ]
-        }
-    }
+class JobStatusResponse(JobMetadataBase):
+    input_params: Optional[Dict[str, Any]] = None # Include input for status check
 
-# --- Removed old commented-out stream schemas ---
-# (Keep them if you plan to add more structured stream events later)
+class JobListResponseItem(JobMetadataBase):
+     # Maybe only include essential info for list views
+     input_summary: Optional[str] = None # e.g., first few chars of request
+
+class JobListResponse(BaseModel):
+    jobs: List[JobListResponseItem]
+    total: int
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+class JobResultResponse(JobMetadataBase):
+    input_params: Optional[Dict[str, Any]] = None
+    result_data: Optional[Any] = None # The actual result (e.g., Markdown string, JSON data)
+
+class StartJobResponse(BaseModel):
+    job_id: str
+    message: str = "Job started successfully."
+
+class CancelJobResponse(BaseModel):
+    job_id: str
+    status: str # e.g., "CANCEL_REQUESTED", "ALREADY_COMPLETED", "NOT_FOUND"
+    message: Optional[str] = None
+
+# Example payload for starting a 'deep_research' job
+class StartDeepResearchPayload(BaseModel):
+    topic: str = Field(..., description="The main research topic.")
+    depth: int = Field(default=2, ge=1, le=5, description="Research depth (e.g., number of refinement rounds).")
+    max_sources_per_query: int = Field(default=5, ge=1, le=10, description="Max sources to fetch per individual search query.")
+    max_total_sources: int = Field(default=15, ge=1, le=50, description="Max total sources to process for the final report.")
+    # Add other relevant parameters like exclude_domains etc.

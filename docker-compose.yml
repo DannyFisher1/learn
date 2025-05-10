@@ -1,20 +1,25 @@
 name: learnstack
 
+
 services:
   backend:
-    build:
-      context: ./backend
+    build: ./backend
+    working_dir: /app
+    environment:
+      REDIS_URL: redis://redis:6379
+      CHROMA_URL: http://chroma:6000
+      USE_POLLING: "true"  # Enable polling for file change detection
     volumes:
       - ./backend:/app
     ports:
       - "9000:9000"
-    environment:
-      REDIS_URL: redis://redis:6379
-      CHROMA_URL: http://chroma:6000
     depends_on:
       - chroma
       - redis
       - searxng
+    expose:
+      - "9000"
+
 
 
   # frontend:

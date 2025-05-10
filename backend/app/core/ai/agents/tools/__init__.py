@@ -3,7 +3,7 @@ from .rag_tool import query_uploaded_documents, summarize_document_content
 from .math_tool import solve_math_question
 from .calculator_tool import evaluate_expression
 from .lookup_package_tool import inspect_package, get_package_info
-from .web_search_searx_tool import search_and_summarize_web
+from .web_search_searx_tool import search_web_raw
 from .reddit_search_tool import search_reddit
 from .project_generator_tool import generate_software_project
 # Add other tools here as you create them
@@ -17,7 +17,7 @@ tools = [
     evaluate_expression,
     inspect_package,
     get_package_info,
-    search_and_summarize_web,
+    search_web_raw,
     search_reddit,
     generate_software_project,
     # calculator, # Example of adding another tool

@@ -9,8 +9,10 @@ import json
 
 # App imports
 from app import schemas
-from app.services import chat_service
-from app.services.chat_service import AgentNotReadyError # Removed handle_chat_request_stream import, call via service module
+from app.services.chat.streaming import handle_chat_request_stream
+from app.services.chat.non_streaming import handle_chat_request
+# -----------------------
+from app.errors import AgentNotReadyError # Import from new location
 from app.utils import get_logger # Added this import
 
 logger = get_logger(__name__)
@@ -41,7 +43,7 @@ async def ask_agent_endpoint(
     try:
         logger.debug(f"Received ask request: {request.model_dump(exclude_none=True)}")
         # Pass background_tasks to the service function
-        response_data = await chat_service.handle_chat_request(request, background_tasks)
+        response_data = await handle_chat_request(request, background_tasks)
         return response_data
 
     # --- Error Handling (No change) ---
@@ -93,7 +95,7 @@ async def ask_agent_streaming_endpoint(
     # --- Call Streaming Service Layer ---
     try:
         # Fix: Remove 'await' keyword since handle_chat_request_stream returns an async generator
-        event_generator = chat_service.handle_chat_request_stream(request_body, background_tasks)
+        event_generator = handle_chat_request_stream(request_body, background_tasks)
 
         # Use EventSourceResponse to stream the generator's output
         return EventSourceResponse(event_generator)

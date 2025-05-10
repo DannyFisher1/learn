@@ -2,27 +2,21 @@
 'use client';
 
 import React, { useRef, useEffect } from 'react';
-import MessageBlock from './MessageBlock'; // Use the renamed component
+import MessageBlock from './MessageBlock'; // Use the block component
 import { Message as ApiMessage } from '@/lib/api';
-import { MagicWandIcon } from '@radix-ui/react-icons';
-import { Terminal } from 'lucide-react'; // Keep Terminal for placeholder text
+import { MagicWandIcon } from '@radix-ui/react-icons'; // Keep for welcome
+import { Terminal } from 'lucide-react'; // Keep for welcome text
+import { LayoutPanelLeft } from 'lucide-react';
 
-// --- Updated Props Interface ---
-// Removed activeContextMessageId and onShowContext
 interface ChatMessagesProps {
     messages: ApiMessage[];
-    isAsking: boolean; // To know whether to show the welcome message
-    currentAIMessageId?: string | null; // To style the currently streaming message
+    isAsking: boolean; // Still useful for showing welcome message or global loading state
+    // currentAIMessageId removed as MessageBlock now relies on its own message prop and isAsking
 }
+
 // -----------------------------
 
-export default function ChatMessages({
-    messages,
-    isAsking,
-    currentAIMessageId,
-    // activeContextMessageId, <-- Removed
-    // onShowContext           <-- Removed
-}: ChatMessagesProps) {
+export default function ChatMessages({ messages, isAsking }: ChatMessagesProps) {
     const messagesEndRef = useRef<null | HTMLDivElement>(null);
     const scrollContainerRef = useRef<null | HTMLDivElement>(null);
 
@@ -43,37 +37,30 @@ export default function ChatMessages({
     }, [messages]); // Dependency remains messages array
 
     return (
-        <div ref={scrollContainerRef} className="flex-grow overflow-y-auto p-4 md:p-6 space-y-6 bg-muted/30 scroll-smooth">
-            {messages.length === 0 && !isAsking ? (
-                // --- Updated Welcome Message ---
-                <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground">
-                     <MagicWandIcon className="w-16 h-16 text-muted-foreground/50 mb-4" />
-                     <h3 className="text-lg font-semibold text-foreground mb-1">Assistant Ready</h3>
-                     <p className="text-sm px-4 max-w-xs">
-                         Use the sidebar <span className="inline-block mx-1 text-lg align-text-bottom">☰</span>
-                          to manage documents, then ask a question below.
-                     </p>
-                      <p className="text-xs mt-2 px-4 max-w-xs">
-                          Context like agent steps <span className="inline-block mx-0.5"><Terminal size={12} /></span> or retrieved info
-                          will appear automatically in the right pane.
-                     </p>
-                </div>
-                // -------------------------------
-            ) : (
-                 messages.map((msg) => (
-                    <MessageBlock
-                        key={msg.id ?? `msg-${msg.sender}-${Math.random()}`}
-                        message={msg}
-                        isStreaming={msg.id === currentAIMessageId}
-                        // --- Removed Context Props ---
-                        // isActiveContext={msg.id === activeContextMessageId} <-- Removed
-                        // onShowContext={onShowContext} <-- Removed
-                        // -----------------------------
-                    />
-                ))
-            )}
-            {/* Scroll target div */}
-            <div ref={messagesEndRef} />
+        // This outer div handles the scrolling
+        <div ref={scrollContainerRef} className="flex-grow overflow-y-auto p-4 md:p-6 scroll-smooth bg-background dark:bg-gray-950/70"> {/* Adjusted background */}
+             {/* This inner div centers and constrains the width of the messages */}
+             <div className="max-w-4xl mx-auto w-full space-y-8"> {/* Increased space-y, Added max-w, mx-auto */}
+                {messages.length === 0 && !isAsking ? (
+                    // Welcome Message (Unchanged)
+                    <div className="flex flex-col items-center justify-center h-[calc(100vh-10rem)] text-center text-muted-foreground"> {/* Adjusted height */}
+                         <MagicWandIcon className="w-16 h-16 text-muted-foreground/50 mb-4" />
+                         <h3 className="text-lg font-semibold text-foreground mb-1">Assistant Ready</h3>
+                         <p className="text-sm px-4 max-w-xs"> Use the sidebar <span className="inline-block mx-1 text-lg align-text-bottom">☰</span> to manage tasks, then ask a question below. </p>
+                          <p className="text-xs mt-2 px-4 max-w-xs"> Workflow results <span className="inline-block mx-0.5"><LayoutPanelLeft size={12} /></span> will appear in the right pane. </p>
+                    </div>
+                ) : (
+                    messages.map((msg) => (
+                        <MessageBlock
+                            key={msg.id ?? `msg-${msg.sender}-${Math.random()}`} // Ensure stable key if id exists
+                            message={msg}
+                            isAsking={isAsking && msg.sender === 'ai' && !msg.text && !msg.error} // Pass more specific streaming state?
+                        />
+                    ))
+                )}
+                {/* Scroll target div */}
+                <div ref={messagesEndRef} />
+            </div>
         </div>
     );
 }

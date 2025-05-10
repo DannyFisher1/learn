@@ -1,10 +1,9 @@
-# app/core/ai/agents/tools/rag_tool.py
-
 import logging
-import asyncio # <<< Added import
+import asyncio
+import json # <<< Added import
 from typing import Optional, Dict, Any, List
 from langchain.chains.summarize import load_summarize_chain
-from langchain_core.documents import Document # Changed from docstore
+from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
 from langchain_core.tools import ToolException
 from langchain.tools import tool
@@ -19,90 +18,102 @@ from app.core.ai.agents.chains import get_combine_docs_chain
 
 logger = get_logger(__name__)
 
-# --- Updated tool signature to async and using ainvoke ---
+# Tool to query the vector store based on user documents
 @tool
-async def query_uploaded_documents( # <<< Changed to async def
+async def query_uploaded_documents(
     query: str,
     filenames_filter: Optional[List[str]] = None,
     tag_filter: Optional[str] = None
-) -> str:
+) -> str: # <<< Output is now a JSON STRING
     """
-    Use this tool ONLY when the user asks a question specifically about the content
-    within their uploaded documents (like textbooks, PDFs, notes, slides, homework).
-    Input is the user's question.
-    Optionally specify:
-      - 'filenames_filter': A list of specific filenames to search within.
-      - 'tag_filter': A specific document type/tag to search within (e.g., 'homework', 'textbook').
-    If both filters are provided, documents must match BOTH conditions.
-    Do NOT use this for general knowledge questions.
+    Use this tool ONLY when the user asks a question that could plausibly be answered by
+    their uploaded documents. Input is the user's specific question.
+    Optionally specify 'filenames_filter' or 'tag_filter'.
+    Do NOT use this for general knowledge questions or summarizing entire files.
+    Returns a JSON string containing the 'answer' and the 'rag_sources' (list of dicts
+    with filename, page, and snippet) used to generate the answer.
     """
     logger.info(f"RAG Tool invoked (async). Query: '{query[:50]}...', Filenames Filter: {filenames_filter}, Tag Filter: {tag_filter}")
 
-    try:
-        # Getting chain and retriever instances are usually fast sync operations
-        combine_chain = get_combine_docs_chain()
+    # Default structure for no results or errors
+    error_output = {"answer": f"Could not find relevant information for '{query}'.", "rag_sources": []}
 
-        # Construct Metadata Filter (No change needed here)
+    try:
+        combine_chain = get_combine_docs_chain() # Sync setup okay
+
+        # Construct Metadata Filter
         metadata_filter: Dict[str, Any] = {}
         filter_log_parts = []
         if filenames_filter:
-            if len(filenames_filter) == 1:
-                metadata_filter["source_file"] = filenames_filter[0]
-                filter_log_parts.append(f"Filename='{filenames_filter[0]}'")
-            elif len(filenames_filter) > 1:
-                metadata_filter["source_file"] = {"$in": filenames_filter}
-                filter_log_parts.append(f"Filenames IN {filenames_filter}")
-        if tag_filter:
-            metadata_filter["tag"] = tag_filter
-            filter_log_parts.append(f"Tag='{tag_filter}'")
-
+            if len(filenames_filter) == 1: metadata_filter["source_file"] = filenames_filter[0]; filter_log_parts.append(f"Filename='{filenames_filter[0]}'")
+            elif len(filenames_filter) > 1: metadata_filter["source_file"] = {"$in": filenames_filter}; filter_log_parts.append(f"Filenames IN {filenames_filter}")
+        if tag_filter: metadata_filter["tag"] = tag_filter; filter_log_parts.append(f"Tag='{tag_filter}'")
         filter_log = " and ".join(filter_log_parts) if filter_log_parts else "None"
         logger.info(f"RAG Tool: Applying metadata filter: {filter_log}")
 
-        # Get Retriever (sync setup)
-        retriever = get_retriever(
+        retriever = get_retriever( # Sync setup okay
             search_type="similarity",
             k=config.RETRIEVER_K,
             filter_metadata=metadata_filter if metadata_filter else None
         )
 
-        # 2. Retrieve Documents asynchronously
+        # Retrieve Documents asynchronously
         logger.debug(f"Invoking retriever asynchronously with query: '{query}' and filter: {metadata_filter}")
-        retrieved_docs = await retriever.ainvoke(query) # <<< Changed to ainvoke
+        retrieved_docs: List[Document] = await retriever.ainvoke(query) # Async retrieval
         logger.info(f"RAG Tool: Retrieved {len(retrieved_docs)} documents matching filter: {filter_log}.")
 
         if not retrieved_docs:
-             # Handling no results (No change needed here)
+             # Construct no results message
              filter_desc = "within the uploaded documents"
-             if filenames_filter and tag_filter:
-                 filter_desc = f"within documents matching filenames {filenames_filter} and tag '{tag_filter}'"
-             elif filenames_filter:
-                  if len(filenames_filter) == 1: filter_desc = f"within the document '{filenames_filter[0]}'"
-                  else: filter_desc = f"within documents matching filenames {filenames_filter}"
+             if filenames_filter and tag_filter: filter_desc = f"within documents matching filenames {filenames_filter} and tag '{tag_filter}'"
+             elif filenames_filter: filter_desc = f"within documents matching filenames {filenames_filter}" if len(filenames_filter) > 1 else f"within the document '{filenames_filter[0]}'"
              elif tag_filter: filter_desc = f"within documents tagged as '{tag_filter}'"
              logger.warning(f"No relevant documents found {filter_desc} for query: '{query}'")
-             return f"Based on my search {filter_desc}, I could not find information relevant to your question: '{query}'"
+             error_output["answer"] = f"Based on my search {filter_desc}, I could not find information relevant to your question: '{query}'"
+             return json.dumps(error_output) # Return JSON string
 
-        # 3. Invoke the Combine Docs Chain asynchronously to Synthesize Answer
+        # --- Extract Context for UI ---
+        rag_sources_for_ui = []
+        for doc in retrieved_docs:
+            metadata = doc.metadata or {}
+            source_info = {
+                "filename": metadata.get("source_file", "Unknown Source"),
+                "page": metadata.get("page", "N/A"), # Use page number if available
+                "snippet": doc.page_content # The retrieved chunk
+            }
+            rag_sources_for_ui.append(source_info)
+        # ------------------------------
+
+        # Invoke the Combine Docs Chain asynchronously
         logger.debug("Invoking combine documents chain asynchronously...")
-        answer = await combine_chain.ainvoke({ # <<< Changed to ainvoke
-            "input": query,
-            "context": retrieved_docs
-        })
+        # Pass only necessary context to the chain if it doesn't need the full metadata within the chain itself
+        # Or pass retrieved_docs directly if the chain handles Document objects
+        chain_input = {
+             "input": query,
+             "context": retrieved_docs # Pass full docs if chain expects them
+             # Alternatively, pass formatted context:
+             # "context": "\n\n".join([f"Source: {s['filename']}, Page: {s['page']}\n{s['snippet']}" for s in rag_sources_for_ui])
+        }
+        answer_text = await combine_chain.ainvoke(chain_input) # Get synthesized answer string
 
-        logger.info(f"RAG Tool generated answer length: {len(answer)}")
-        return answer
+        logger.info(f"RAG Tool generated answer length: {len(answer_text)}")
+
+        # --- Construct Final JSON Output ---
+        final_output = {
+            "answer": answer_text.strip(),
+            "rag_sources": rag_sources_for_ui
+        }
+        return json.dumps(final_output, default=str) # Return JSON string
+        # ---------------------------------
 
     except RuntimeError as rte:
-        # Catch errors from get_combine_docs_chain or get_retriever setup
         logger.error(f"Runtime error setting up RAG tool components for query '{query}': {rte}", exc_info=False)
-        # Raise ToolException for agent awareness
-        raise ToolException(f"Error: Could not prepare the RAG tool components: {rte}")
+        error_output["answer"] = f"Error: Could not prepare the RAG tool components: {rte}"
+        return json.dumps(error_output) # Return JSON string on error
     except Exception as e:
-        # Catch errors during ainvoke or other processing
         logger.error(f"Unexpected error executing RAG tool for query '{query}': {e}", exc_info=True)
-        raise ToolException(f"Error: An internal error occurred while searching the documents.")
-
+        error_output["answer"] = f"Error: An internal error occurred while searching the documents."
+        return json.dumps(error_output) # Return JSON string on error
 
 # --- Helper function remains synchronous ---
 def _load_document_chunks_by_filename(filename: str) -> Optional[List[Document]]:

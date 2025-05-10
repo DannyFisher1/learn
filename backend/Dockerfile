@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y \
     libatlas-base-dev \
     && rm -rf /var/lib/apt/lists/*
 
+
+
+
 # Set workdir
 WORKDIR /app
 
@@ -21,7 +24,6 @@ RUN playwright install
 RUN playwright install-deps
 RUN playwright install chromium
 
-# Copy app code
-# COPY . .
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000", "--reload", "--reload-dir", "/app"]
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000", "--reload", "--reload-dir", "/app/app", "--reload-dir", "/app"]

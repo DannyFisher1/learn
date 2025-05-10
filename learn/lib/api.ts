@@ -1,189 +1,169 @@
-// lib/api.ts
+// learn/lib/api.ts
 
-// Base URL for the backend API - Ensure this matches your backend port
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:9000';
 
 // --- Core Interfaces ---
 
-export interface AgentAction {
-    tool?: string;
-    tool_input?: any;
-    log?: string;
-}
+export interface AgentAction { tool?: string; tool_input?: any; log?: string; }
+export interface IntermediateStep { action: AgentAction | string; observation: any; }
 
-export interface IntermediateStep {
-    action: AgentAction | string;
-    observation: any;
-}
+// --- Source & Context Types ---
+export interface Source { title: string; url: string; snippet?: string; } // For Web Sources
+export interface RagSource { source: string; page: number | string } // For Legacy/Simple RAG display
 
-export interface RedditPost {
-    post_title: string;
-    post_score: number;
-    post_id: string;
-    post_subreddit: string;
-    post_url: string;
-    post_created_utc?: number;
-    post_text?: string;
-    post_num_comments?: number;
-    post_author?: string;
-}
-
+// Define the structure for detailed RAG context chunks
 export interface RagContextDocument {
-    id: string;
-    page_content: string;
-    metadata: {
-        source_file?: string | null;
-        page?: number | string | null;
-        tag?: string | null;
-        file_type?: string | null;
-    };
+  filename: string;
+  page: string | number; // Page number can be string or number
+  snippet: string;       // The actual retrieved text chunk
 }
+// --- End Source & Context Types ---
 
+
+// --- Updated Message Interface ---
 export interface Message {
   sender: 'user' | 'ai';
   text: string;
-  sources?: { source: string; page: number | string }[];
   id?: string;
-  intermediate_steps?: IntermediateStep[]; // Keep for non-streaming response
-  // Properties likely found within LangGraph messages state:
-  type?: 'human' | 'ai' | 'tool' | string; // From BaseMessage type
-  content?: string;
-  tool_calls?: any[]; // From AIMessage
-  tool_call_id?: string; // From ToolMessage
-}
-
-// --- API Payloads and Responses ---
-
-export interface UploadFilePayload {
-    file: File;
-    tag?: string;
-}
-
-export interface AskPayload {
-  question: string;
-  filenames?: string[];
-  tag_filter?: string | null;
-  chat_history?: Array<{ sender: 'user' | 'ai'; text: string }>;
-}
-
-export interface AskResponseData {
-  answer: string;
-  source_documents?: { source: string; page: number | string }[];
+  // UI State
+  statusSteps?: string[];
+  webSources?: Source[]; // Web search results
+  ragSources?: RagSource[]; // Optional: Keep if you still use simple RAG source display elsewhere
+  retrievedContext?: RagContextDocument[]; // <-- ADDED: For detailed RAG context display
+  error?: string | null;
+  // Debugger / Legacy State
   intermediate_steps?: IntermediateStep[];
+  type?: 'human' | 'ai' | 'tool' | string;
+  content?: string; // Raw content if needed
+  tool_calls?: any[];
+  tool_call_id?: string;
+}
+// --- End Updated Message Interface ---
+
+// --- API Payloads & Responses (unchanged from previous) ---
+export interface AskPayload { question: string; filenames?: string[]; tag_filter?: string | null; chat_history?: Array<{ sender: 'user' | 'ai'; text: string }>; }
+export interface AskResponseData { answer: string; source_documents?: any[]; intermediate_steps?: IntermediateStep[]; }
+export interface DocumentInfo { filename: string; tag?: string | null; file_type?: string | null; }
+export interface DocumentList { documents: DocumentInfo[]; }
+export interface ProviderStatus { current_provider: string; message: string; }
+export interface SetProviderPayload { provider: string; }
+export interface UploadFilePayload { file: File; tag?: string; }
+
+
+// --- UI Stream Event Interfaces ---
+export interface ThinkingStartedData { message: string; }
+export interface ToolCallInitiatedData { tool_name: string; tool_input: any; message: string; }
+export interface SourcesFoundData { sources: Source[]; } // Web sources payload
+export interface RagContextFoundData { context: RagContextDocument[]; } // <<< ADDED: RAG context payload
+export interface StatusUpdateData { message: string; }
+export interface AiMessageChunkData { content_chunk: string; }
+export interface FinalAnswerTurnCompleteData { message_id?: string; }
+export interface ErrorMessageData { error: string; details?: string; }
+
+
+// --- NEW: Job Schemas ---
+export const JOB_STATUS_PENDING = "PENDING";
+export const JOB_STATUS_RUNNING = "RUNNING";
+export const JOB_STATUS_COMPLETED = "COMPLETED";
+export const JOB_STATUS_FAILED = "FAILED";
+export const JOB_STATUS_CANCELED = "CANCELED";
+export type JobStatus = typeof JOB_STATUS_PENDING | typeof JOB_STATUS_RUNNING | typeof JOB_STATUS_COMPLETED | typeof JOB_STATUS_FAILED | typeof JOB_STATUS_CANCELED;
+
+export interface JobMetadata {
+    job_id: string;
+    task_type: string;
+    status: JobStatus;
+    created_at: number; // Timestamp
+    updated_at: number; // Timestamp
+    progress_message?: string | null;
+    error_message?: string | null;
 }
 
-export interface DocumentInfo {
-    filename: string;
-    tag?: string | null;
-    file_type?: string | null;
+export interface JobStatusResponse extends JobMetadata {
+    input_params?: Record<string, any> | null;
 }
 
-export interface DocumentList {
-    documents: DocumentInfo[];
+export interface JobListResponseItem extends JobMetadata {
+     input_summary?: string | null;
 }
 
-export interface ProviderStatus {
-    current_provider: 'ollama' | 'openai' | string;
-    message: string;
+export interface JobListResponse {
+    jobs: JobListResponseItem[];
+    total: number;
+    limit?: number | null;
+    offset?: number | null;
 }
 
-export interface SetProviderPayload {
-    provider: 'ollama' | 'openai';
+export interface JobResultResponse extends JobMetadata {
+    input_params?: Record<string, any> | null;
+    result_data?: any | null; // Could be Markdown string, JSON, etc.
 }
 
-
-// --- Interfaces for Debugger Streaming ---
-
-// Describes the structured data emitted by the enhanced parser
-export interface StreamLogData {
-    type: 'node_start' | 'node_end' | 'state_update' | 'token' | 'tool_call' | 'tool_result' | 'error' | 'final_message' | 'stream_end' | 'node_output';
-    nodeId?: string;        // ID of the node starting/ending (e.g., "agent", "action")
-    state?: { messages: Message[] }; // The updated messages list from AgentState (using Message type for frontend)
-    token?: string;         // Final answer token
-    toolCall?: { id: string; name?: string; args?: any }; // Details of a tool call initiated
-    toolResult?: { id: string; result: any };            // Result corresponding to a tool call ID
-    output?: any;           // For 'node_output' event, carrying the node's final output
-    message?: string;       // For final_message or general info messages from backend
-    error?: any;            // Error details
+export interface StartJobResponse {
+    job_id: string;
+    message?: string;
 }
 
-// Callbacks for the debugger stream
-export type StreamLogCallbacks = {
+export interface CancelJobResponse {
+    job_id: string;
+    status: string; // e.g., "CANCEL_REQUESTED", "CANCEL_FAILED"
+    message?: string | null;
+}
+
+// Payload for starting deep research
+export interface StartDeepResearchPayload {
+    topic: string;
+    depth?: number;
+    max_sources_per_query?: number;
+    max_total_sources?: number;
+    // Add other params matching backend schema if needed
+}
+
+// Unified event type for the frontend callback
+export interface UiStreamEvent {
+  type:
+    | 'thinking_started' | 'tool_call_initiated' | 'sources_found'
+    | 'rag_context_found' // <<< ADDED
+    | 'status_update' | 'ai_message_chunk' | 'final_answer_turn_complete'
+    | 'error_message' | 'stream_end'
+    // Debugger event types
+    | 'node_start' | 'node_end' | 'state_update' | 'token' | 'tool_call'
+    | 'tool_result' | 'final_message' | 'node_output';
+  data: any; // Parsed data payload for the event type
+  rawBackendEvent?: string; // Original SSE event name
+}
+
+// Structure backend sends in the SSE `data:` field
+export interface BackendUiEventPayload { type: UiStreamEvent['type']; data: string; }
+export interface BackendDebuggerEventPayload { event: "log_data"; data: string; }
+
+
+// Callbacks for the unified stream
+export type StreamEventCallbacks = {
   onOpen?: () => void;
-  onLogData?: (logData: StreamLogData) => void; // Single callback for all structured events
+  onEvent?: (event: UiStreamEvent) => void;
   onComplete?: () => void;
-  onError?: (error: any | string) => void; // General error callback
+  onError?: (error: any | string) => void;
 };
 
-// --- Helper for Duck Typing Messages (adjust properties as needed) ---
-function getMessageType(msg: any): string {
-    if (!msg || typeof msg !== 'object') return 'unknown';
-    if ('tool_call_id' in msg) return 'tool';
-    if ('tool_calls' in msg && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return 'ai_tool_call'; // Specific state
-    if (typeof msg.content === 'string' && msg.type === 'ai') return 'ai'; // Check type property if backend sends it
-    if (typeof msg.content === 'string' && msg.type === 'human') return 'human'; // Check type property
-    // Fallbacks
-    if ('tool_calls' in msg) return 'ai'; // Assume AI if tool_calls key exists
-    return 'unknown_message';
-}
+// --- API Functions ---
+// Upload, Ask (non-stream), Get/Delete Docs, Provider functions remain unchanged
+export const uploadFile = async (payload: UploadFilePayload): Promise<{ filename: string; message: string }> => { console.log(`Uploading file: ${payload.file.name}, Tag: ${payload.tag || 'N/A'}`); const formData = new FormData(); formData.append('file', payload.file); if (payload.tag) { formData.append('tag', payload.tag); } const response = await fetch(`${API_BASE_URL}/documents/upload`, { method: 'POST', body: formData, }); if (!response.ok) { let errorDetail = `Upload failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Upload API Error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
+export const askQuestion = async (payload: AskPayload): Promise<AskResponseData> => { console.log("Sending request to /ask endpoint with payload:", payload); const response = await fetch(`${API_BASE_URL}/ask`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ question: payload.question, ...(payload.filenames && payload.filenames.length > 0 && { filenames: payload.filenames }), ...(payload.tag_filter && { tag_filter: payload.tag_filter }), ...(payload.chat_history && { chat_history: payload.chat_history }), }), }); if (!response.ok) { let errorDetail = `Ask request failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Ask question API error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
+export const getDocumentList = async (): Promise<DocumentList> => { console.log("Fetching document list..."); const response = await fetch(`${API_BASE_URL}/documents`, { method: 'GET', headers: { 'Accept': 'application/json' }, }); if (!response.ok) { let errorDetail = `Get documents failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Get document list error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
+export const deleteDocument = async (filename: string): Promise<void> => { const encodedFilename = encodeURIComponent(filename); console.log(`Requesting deletion of document: ${filename}`); const response = await fetch(`${API_BASE_URL}/documents/${encodedFilename}`, { method: 'DELETE', }); if (response.status === 204) { console.log(`Successfully deleted ${filename}`); return; } let errorDetail = `Delete failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error(`Delete document error for ${filename}:`, errorDetail); throw new Error(errorDetail); };
+export const getCurrentProvider = async (): Promise<ProviderStatus> => { console.log("Fetching current AI provider status..."); const response = await fetch(`${API_BASE_URL}/config/provider`, { method: 'GET', headers: { 'Accept': 'application/json' }, }); if (!response.ok) { let errorDetail = `Get provider status failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Get provider status error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
+export const switchProvider = async (payload: SetProviderPayload): Promise<ProviderStatus> => { console.log(`Requesting switch to AI provider: ${payload.provider}`); const response = await fetch(`${API_BASE_URL}/config/provider`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(payload), }); if (!response.ok) { let errorDetail = `Switch provider failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Switch provider error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
 
-// --- Duck Typing Helper for Chunk ---
-function isAIMessageChunk(value: any): boolean {
-    // Adjust checks based on actual streamed chunk properties from LangGraph/LangChain
-    return value && typeof value === 'object' && 'content' in value && typeof value.content === 'string' && ('tool_call_chunks' in value || 'tool_calls' in value); // AIMessageChunk often has content and potentially tool_call_chunks
-}
-// --- Duck Typing Helper for Tool Call ---
-function isToolCall(value: any): boolean {
-     return value && typeof value === 'object' && 'id' in value && 'name' in value && 'args' in value;
-}
-// --- Duck Typing Helper for Tool Message ---
-function isToolMessage(value: any): boolean {
-     return value && typeof value === 'object' && 'tool_call_id' in value && 'content' in value;
-}
-
-// --- Updated SSE Parser Helper Function ---
-const parseAndProcessLogChunk = (logDataJson: string, cbs: StreamLogCallbacks) => {
-    // The backend now sends the structured data directly
-    try {
-        const logData: StreamLogData = JSON.parse(logDataJson);
-        // Directly call the single callback with the parsed data
-        if (cbs.onLogData) {
-            cbs.onLogData(logData);
-        } else {
-             console.warn("onLogData callback not provided, skipping log processing:", logData);
-        }
-    } catch (e) {
-        console.error("[SSE Parser] Failed to parse structured log data JSON:", logDataJson, e);
-        if (cbs.onError) cbs.onError(`Failed to parse stream data: ${e instanceof Error ? e.message : String(e)}`);
-    }
-};
-// --- End Updated SSE Parser Helper ---
-
-
-// --- API Functions (uploadFile, askQuestion, getDocumentList, deleteDocument, getCurrentProvider, switchProvider remain the same) ---
-/** Uploads a file with an optional tag. */
-export const uploadFile = /* ... (implementation unchanged) ... */ async (payload: UploadFilePayload): Promise<{ filename: string; message: string }> => { console.log(`Uploading file: ${payload.file.name}, Tag: ${payload.tag || 'N/A'}`); const formData = new FormData(); formData.append('file', payload.file); if (payload.tag) { formData.append('tag', payload.tag); } const response = await fetch(`${API_BASE_URL}/documents/upload`, { method: 'POST', body: formData, }); if (!response.ok) { let errorDetail = `Upload failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Upload API Error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
-/** Sends a question for a non-streaming response. */
-export const askQuestion = /* ... (implementation unchanged) ... */ async (payload: AskPayload): Promise<AskResponseData> => { console.log("Sending request to /ask endpoint with payload:", payload); const response = await fetch(`${API_BASE_URL}/ask`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ question: payload.question, ...(payload.filenames && payload.filenames.length > 0 && { filenames: payload.filenames }), ...(payload.tag_filter && { tag_filter: payload.tag_filter }), ...(payload.chat_history && { chat_history: payload.chat_history }), }), }); if (!response.ok) { let errorDetail = `Ask request failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Ask question API error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
-/** Fetches the list of indexed documents. */
-export const getDocumentList = /* ... (implementation unchanged) ... */ async (): Promise<DocumentList> => { console.log("Fetching document list..."); const response = await fetch(`${API_BASE_URL}/documents`, { method: 'GET', headers: { 'Accept': 'application/json' }, }); if (!response.ok) { let errorDetail = `Get documents failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Get document list error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
-/** Deletes a specified document. */
-export const deleteDocument = /* ... (implementation unchanged) ... */ async (filename: string): Promise<void> => { const encodedFilename = encodeURIComponent(filename); console.log(`Requesting deletion of document: ${filename}`); const response = await fetch(`${API_BASE_URL}/documents/${encodedFilename}`, { method: 'DELETE', }); if (response.status === 204) { console.log(`Successfully deleted ${filename}`); return; } let errorDetail = `Delete failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error(`Delete document error for ${filename}:`, errorDetail); throw new Error(errorDetail); };
-/** Fetches the current AI provider status. */
-export const getCurrentProvider = /* ... (implementation unchanged) ... */ async (): Promise<ProviderStatus> => { console.log("Fetching current AI provider status..."); const response = await fetch(`${API_BASE_URL}/config/provider`, { method: 'GET', headers: { 'Accept': 'application/json' }, }); if (!response.ok) { let errorDetail = `Get provider status failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Get provider status error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
-/** Requests a switch of the active AI provider. */
-export const switchProvider = /* ... (implementation unchanged) ... */ async (payload: SetProviderPayload): Promise<ProviderStatus> => { console.log(`Requesting switch to AI provider: ${payload.provider}`); const response = await fetch(`${API_BASE_URL}/config/provider`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(payload), }); if (!response.ok) { let errorDetail = `Switch provider failed: ${response.status} ${response.statusText}`; try { const errorData = await response.json(); errorDetail = errorData.detail || errorDetail; } catch (e) { /* Ignore */ } console.error("Switch provider error:", errorDetail); throw new Error(errorDetail); } return response.json(); };
-
-// --- askQuestionStream (Updated for Debugger) ---
+// --- askQuestionStream (SSE Parsing Logic - Unchanged from previous) ---
 export const askQuestionStream = (
     payload: AskPayload,
-    callbacks: StreamLogCallbacks // Uses the new callback type
+    callbacks: StreamEventCallbacks
 ): AbortController => {
-    console.log("Connecting to /ask-stream for log streaming with payload:", payload);
+    console.log("Connecting to /ask-stream with payload:", payload);
     const abortController = new AbortController();
-    const { onOpen, onLogData, onComplete, onError } = callbacks; // Get the single data callback
+    const { onOpen, onEvent, onComplete, onError } = callbacks;
 
-    // --- Main Fetch Logic (Reads raw chunks) ---
     const fetchStream = async () => {
         try {
             const response = await fetch(`${API_BASE_URL}/ask-stream`, {
@@ -193,19 +173,12 @@ export const askQuestionStream = (
                 signal: abortController.signal,
             });
 
-            if (!response.ok) { /* ... (standard error handling) ... */
-                let errorDetail = `Stream request failed: ${response.status} ${response.statusText}`;
-                try { const errorData = await response.json(); errorDetail = errorData.detail || errorData.error || errorDetail; } catch (e) { /* Ignore */ }
-                console.error("Ask stream API error response:", { status: response.status, detail: errorDetail });
-                if (onError) onError(errorDetail); if (onComplete) onComplete(); return;
-            }
-            if (!response.body) { throw new Error('Response body is unexpectedly null'); }
+            if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
+            if (!response.body) { throw new Error('Response body is null'); }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            // Removed temporary JSON buffer, process line by line
-
             if (onOpen) onOpen();
 
             while (true) {
@@ -217,67 +190,113 @@ export const askQuestionStream = (
                     const line = buffer.substring(0, lineEndIndex).trim();
                     buffer = buffer.substring(lineEndIndex + 1);
 
-                    // --- Updated SSE Message Parsing ---
                     if (line.startsWith('event:')) {
-                        const eventName = line.substring(6).trim();
-                        // We expect 'log_data' or maybe 'error', 'end' from backend now
-                        // Read the next line which should be the 'data:' line
+                        const sseEventName = line.substring(6).trim();
                         let dataLineIndex = buffer.indexOf('\n');
                         if (dataLineIndex >= 0) {
                              const nextLine = buffer.substring(0, dataLineIndex).trim();
                              if (nextLine.startsWith('data:')) {
-                                 const jsonData = nextLine.substring(5).trim();
-                                 if (eventName === 'log_data') {
-                                      parseAndProcessLogChunk(jsonData, callbacks);
-                                 } else if (eventName === 'error') {
-                                     // Handle explicit error events if backend sends them
-                                     try {
-                                         const errorData = JSON.parse(jsonData);
-                                         if (onError) onError(errorData.error || jsonData);
-                                     } catch (e) { if (onError) onError("Failed to parse error event data"); }
-                                 } else if (eventName === 'end') {
-                                      // Explicit end signal from backend (though onComplete in finally is more robust)
-                                      console.log("[SSE Parser] Received explicit 'end' event name.");
-                                 } else {
-                                     console.warn(`[SSE Parser] Received unexpected event name: '${eventName}'`)
+                                 const sseDataFieldJsonStr = nextLine.substring(5).trim();
+                                 buffer = buffer.substring(dataLineIndex + 1);
+                                 if (onEvent) {
+                                    try {
+                                        const parsedSseDataField = JSON.parse(sseDataFieldJsonStr);
+                                        if (sseEventName === "log_data") { // Debugger event
+                                            onEvent({ type: parsedSseDataField.type, data: parsedSseDataField, rawBackendEvent: sseEventName });
+                                        } else { // Our UI event
+                                            const uiEventPayload = parsedSseDataField as BackendUiEventPayload;
+                                            onEvent({ type: uiEventPayload.type as UiStreamEvent['type'], data: JSON.parse(uiEventPayload.data), rawBackendEvent: sseEventName });
+                                        }
+                                    } catch (e) { if (onError) onError(`Failed to process stream event data: ${e instanceof Error ? e.message : String(e)}`); }
                                  }
-                                 buffer = buffer.substring(dataLineIndex + 1); // Consume data line
-                             } else {
-                                 // Event line wasn't followed by data line, potential issue
-                                 console.warn(`[SSE Parser] Event line '${line}' not followed by data line.`);
-                             }
-                        } else if (done) {
-                            // Stream ended right after event line
-                            break;
-                        } else {
-                             // Need more data for the data line
-                             buffer = line + '\n' + buffer; // Put event line back
-                             break; // Exit inner loop, wait for more data
-                        }
-                    } else if (line.startsWith('data:')) {
-                         // Message without an 'event:' line (defaults to 'message' event)
-                         // We don't expect backend to send messages this way anymore, maybe log warning
-                         console.warn("[SSE Parser] Received data without explicit event:", line);
+                             } else { console.warn(`[SSE Parser] Event line '${line}' not followed by data line.`); }
+                        } else if (done) { break; }
+                        else { buffer = line + '\n' + buffer; break; }
                     }
-                    // Ignore empty lines and comment lines (starting with ':')
-                    // ----------------------------------
-                } // End while loop processing lines
-
-                if (done) {
-                    console.log("[SSE Parser] Stream reading finished (done signal).");
-                    // No trailing data processing needed here as we process line-by-line
-                    break;
                 }
-            } // End while(true)
-        } catch (error: any) { /* ... (standard error handling) ... */
+                if (done) { console.log("[SSE Parser] Stream reading finished."); break; }
+            }
+        } catch (error: any) {
             if (error.name === 'AbortError') { console.log('Stream fetch aborted by client.'); }
             else { console.error('Error reading or fetching stream:', error); if (onError) onError(`Stream connection error: ${error.message || String(error)}`); }
         } finally {
              console.log("[SSE Parser] Stream processing loop ended.");
-             if (onComplete) onComplete(); // Ensure onComplete is called
+             if (onComplete) onComplete();
         }
-    }; // End fetchStream
+    };
 
     fetchStream();
     return abortController;
+};
+
+
+// --- NEW: Job API Functions ---
+
+async function handleApiResponse<T>(response: Response): Promise<T> {
+    if (!response.ok) {
+        let errorDetail = `API request failed: ${response.status} ${response.statusText}`;
+        try { const errorData = await response.json(); errorDetail = errorData.detail || errorData.error || errorDetail; } catch (e) {}
+        console.error("API Error:", errorDetail, response);
+        throw new Error(errorDetail);
+    }
+    return response.json();
+}
+
+export const startJob = async (taskType: string, inputParams: Record<string, any>): Promise<StartJobResponse> => {
+    console.log(`Starting job: ${taskType}`, inputParams);
+    const response = await fetch(`${API_BASE_URL}/jobs/${taskType}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(inputParams),
+    });
+    return handleApiResponse<StartJobResponse>(response);
+};
+
+export const getJobStatus = async (jobId: string): Promise<JobStatusResponse> => {
+    console.log(`Getting status for job: ${jobId}`);
+    const response = await fetch(`${API_BASE_URL}/jobs/status/${jobId}`, {
+         method: 'GET', headers: { 'Accept': 'application/json' },
+    });
+    return handleApiResponse<JobStatusResponse>(response);
+};
+
+export const getJobResult = async (jobId: string): Promise<JobResultResponse> => {
+    console.log(`Getting result for job: ${jobId}`);
+    const response = await fetch(`${API_BASE_URL}/jobs/result/${jobId}`, {
+         method: 'GET', headers: { 'Accept': 'application/json' },
+    });
+    return handleApiResponse<JobResultResponse>(response);
+};
+
+export const cancelJob = async (jobId: string): Promise<CancelJobResponse> => {
+    console.log(`Requesting cancellation for job: ${jobId}`);
+    const response = await fetch(`${API_BASE_URL}/jobs/cancel/${jobId}`, {
+         method: 'POST', headers: { 'Accept': 'application/json' },
+    });
+     // Cancel might return 200 OK on success or raise HTTPException for failure cases
+    return handleApiResponse<CancelJobResponse>(response);
+};
+
+export const getActiveJobs = async (): Promise<JobListResponse> => {
+    console.log("Fetching active jobs...");
+    const response = await fetch(`${API_BASE_URL}/jobs/active`, {
+         method: 'GET', headers: { 'Accept': 'application/json' },
+    });
+    return handleApiResponse<JobListResponse>(response);
+};
+
+export const getJobHistory = async (limit: number = 20, offset: number = 0): Promise<JobListResponse> => {
+    console.log(`Fetching job history (limit=${limit}, offset=${offset})...`);
+    const response = await fetch(`${API_BASE_URL}/jobs/history?limit=${limit}&offset=${offset}`, {
+         method: 'GET', headers: { 'Accept': 'application/json' },
+    });
+    return handleApiResponse<JobListResponse>(response);
+};
+
+export const hardDeleteJobAPI = async (jobId: string): Promise<{ job_id: string; message: string }> => {
+    console.log(`Requesting permanent deletion for job: ${jobId}`);
+    const response = await fetch(`${API_BASE_URL}/jobs/delete/${jobId}`, {
+         method: 'DELETE', headers: { 'Accept': 'application/json' },
+    });
+    return handleApiResponse<{ job_id: string; message: string }>(response); // Assuming handleApiResponse handles non-OK
 };
