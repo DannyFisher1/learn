@@ -37,8 +37,8 @@ QUERY_REFINEMENT_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """You are an expert research assistant. Analyze the following initial web search results for the user's topic.
 Identify key sub-topics, concepts, and areas requiring deeper investigation.
 Generate a list of specific, follow-up search queries. Also list key concepts.
-Respond ONLY with a JSON object: {{"queries": [{{"query": "..."}}], "key_concepts": ["..."]}}"""),
-    ("human", "Original Topic: {{original_topic}}\n\nInitial Search Results:\n{{initial_results_summary}}")
+Respond ONLY with a JSON object: {{"queries": [{{"query": "..."}}], "key_concepts": ["..."]}}"""), # JSON structure in prompt is fine with double braces for literal JSON
+    ("human", "Original Topic: {original_topic}\n\nInitial Search Results:\n{initial_results_summary}") # CHANGED TO SINGLE BRACES
 ])
 
 REPORT_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
@@ -51,13 +51,14 @@ Instructions:
 5. Completeness: Cover main aspects from context. Note limitations if context is insufficient.
 6. Tone: Neutral, objective, informative.
 
-Original Research Topic: {{original_topic}}
+Original Research Topic: {original_topic} # CHANGED TO SINGLE BRACES
 Collected Web Content (Each entry is a separate source):
 ---CONTEXT START---
-{{aggregated_content}}
+{aggregated_content} # CHANGED TO SINGLE BRACES
 ---CONTEXT END---
 Begin the Markdown report:"""),
 ])
+
 
 # --- Main Workflow Function ---
 async def execute_deep_research_workflow(
